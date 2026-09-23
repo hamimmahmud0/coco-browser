@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
   <title>COCO 1.0 Annotation Browser</title>
-  <link rel="stylesheet" href="/style.css?v=24">
+  <link rel="stylesheet" href="/style.css?v=27">
 </head>
 <body>
   <header class="topbar">
@@ -23,6 +23,10 @@
           <button id="island-frequency-tool" class="tool-menu-item" type="button">
             <strong>Island Frequency</strong>
             <span>Count connected mask regions across every instance</span>
+          </button>
+          <button id="shape-descriptor-tool" class="tool-menu-item" type="button">
+            <strong>Shape Descriptor Lab</strong>
+            <span>Compute selected mask shape descriptors by class</span>
           </button>
         </div>
       </details>
@@ -204,7 +208,51 @@
     </div>
   </div>
 
+  <div id="shape-modal" class="modal shape-modal" role="dialog" aria-modal="true" aria-labelledby="shape-modal-title" hidden>
+    <div class="modal-card shape-card">
+      <div class="modal-header">
+        <div>
+          <h2 id="shape-modal-title">Shape Descriptor Lab</h2>
+          <p>Select only the descriptors and classes you want to measure</p>
+        </div>
+        <button id="close-shape-modal" class="icon-button" type="button" title="Close">×</button>
+      </div>
+      <div id="shape-setup" class="shape-setup">
+        <div class="shape-section-heading">
+          <strong>Descriptors</strong>
+          <div><button id="shape-descriptors-all" class="button secondary" type="button">All</button><button id="shape-descriptors-none" class="button secondary" type="button">None</button></div>
+        </div>
+        <div id="shape-descriptor-list" class="shape-check-grid"></div>
+        <div class="shape-section-heading">
+          <strong>Classes</strong>
+          <div><button id="shape-classes-all" class="button secondary" type="button">All</button><button id="shape-classes-none" class="button secondary" type="button">None</button></div>
+        </div>
+        <div id="shape-class-list" class="shape-check-grid"></div>
+        <div class="shape-run-row">
+          <span id="shape-selection-summary">No descriptors selected</span>
+          <div id="shape-run-progress" class="shape-run-progress" hidden>
+            <progress id="shape-run-progress-bar" max="100" value="0"></progress>
+            <span id="shape-run-progress-count">0 / 0</span>
+          </div>
+          <button id="run-shape-descriptors" class="button primary" type="button" disabled>Run selected descriptors</button>
+        </div>
+      </div>
+      <div id="shape-results" class="shape-results" hidden>
+        <div id="shape-result-summary" class="shape-result-summary"></div>
+        <div class="shape-detail-graph">
+          <div class="shape-detail-controls">
+            <strong>Distribution detail</strong>
+            <select id="shape-detail-class"></select>
+            <select id="shape-detail-descriptor"></select>
+          </div>
+          <canvas id="shape-detail-chart" width="1200" height="460"></canvas>
+        </div>
+        <div id="shape-class-results"></div>
+      </div>
+    </div>
+  </div>
+
   <div id="toast" class="toast" role="status"></div>
-  <script src="/app.js?v=24"></script>
+  <script src="/app.js?v=27"></script>
 </body>
 </html>

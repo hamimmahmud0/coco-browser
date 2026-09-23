@@ -1,10 +1,13 @@
 import argparse
 import json
+import math
 from collections import Counter
 from multiprocessing import get_context
 import mimetypes
+import numpy as np
 import os
 import threading
+import traceback
 import time
 import uuid
 import urllib.error
@@ -31,6 +34,8 @@ _lock = threading.Lock()
 _jobs_lock = threading.Lock()
 _dataset = None
 _jobs = {}
+_shape_jobs = {}
+_shape_references = {}
 
 
 def load_dataset():
@@ -160,6 +165,277 @@ def count_mask_islands(segmentation):
         previous_column = column
         previous = current
     return len({find(node) for node in range(len(parent))})
+
+
+SHAPE_DESCRIPTORS = {
+    "aspect_ratio": "Aspect ratio",
+    "compactness": "Compactness / circularity",
+    "solidity": "Solidity",
+    "convexity": "Convexity",
+    "eccentricity": "Eccentricity",
+    "normalized_perimeter": "Normalized perimeter",
+    "hu_moments": "Hu moments",
+    "zernike_moments": "Zernike moments",
+    "fourier_descriptors": "Fourier descriptors",
+    "hausdorff_distance": "Hausdorff distance",
+    "chamfer_distance": "Chamfer distance",
+}
+_shape_references = {}
+
+
+def mask_array(segmentation):
+    if not isinstance(segmentation, dict):
+        return None
+    counts = segmentation.get("counts", [])
+    if isinstance(counts, str):
+        counts = decode_compressed_counts(counts)
+    size = segmentation.get("size", [])
+    if len(size) != 2 or not counts:
+        return None
+    height, width = size
+    flat = np.zeros(height * width, dtype=np.uint8)
+    position = 0
+    for run_index, count in enumerate(counts):
+        if run_index % 2:
+            end = min(len(flat), position + count)
+            flat[position:end] = 1
+        position += count
+    return flat.reshape((height, width), order="F").astype(bool)
+
+
+def cropped_mask(annotation):
+    mask = mask_array(annotation.get("segmentation"))
+    if mask is None or not mask.any():
+        return None
+    rows, columns = np.where(mask)
+    x0, x1 = int(columns.min()), int(columns.max()) + 1
+    y0, y1 = int(rows.min()), int(rows.max()) + 1
+    return mask[y0:y1, x0:x1], (x0, y0)
+
+
+def boundary_points(mask):
+    padded = np.pad(mask, 1)
+    return np.argwhere((padded[1:-1, 1:-1] & ~padded[:-2, 1:-1]) | (padded[1:-1, 1:-1] & ~padded[2:, 1:-1]) | (padded[1:-1, 1:-1] & ~padded[1:-1, :-2]) | (padded[1:-1, 1:-1] & ~padded[1:-1, 2:]))
+
+
+def convex_hull(points):
+    points = sorted({(int(x), int(y)) for x, y in points})
+    if len(points) <= 2:
+        return points
+    def cross(origin, first, second):
+        return (first[0] - origin[0]) * (second[1] - origin[1]) - (first[1] - origin[1]) * (second[0] - origin[0])
+    lower = []
+    for point in points:
+        while len(lower) >= 2 and cross(lower[-2], lower[-1], point) <= 0:
+            lower.pop()
+        lower.append(point)
+    upper = []
+    for point in reversed(points):
+        while len(upper) >= 2 and cross(upper[-2], upper[-1], point) <= 0:
+            upper.pop()
+        upper.append(point)
+    return lower[:-1] + upper[:-1]
+
+
+def polygon_area(points):
+    if len(points) < 3:
+        return 0.0
+    return abs(sum(points[index][0] * points[(index + 1) % len(points)][1] - points[(index + 1) % len(points)][0] * points[index][1] for index in range(len(points)))) / 2
+
+
+def polygon_perimeter(points):
+    return sum(math.hypot(points[(index + 1) % len(points)][0] - point[0], points[(index + 1) % len(points)][1] - point[1]) for index, point in enumerate(points)) if len(points) > 1 else 0.0
+
+
+def hu_moments(mask):
+    rows, columns = np.where(mask)
+    y = rows.astype(float)
+    x = columns.astype(float)
+    total = float(len(x))
+    cy, cx = y.mean(), x.mean()
+    y, x = y - cy, x - cx
+    mu20, mu02, mu11 = (x * x).mean() * total, (y * y).mean() * total, (x * y).mean() * total
+    mu30, mu03, mu21, mu12 = (x ** 3).mean() * total, (y ** 3).mean() * total, (x * x * y).mean() * total, (x * y * y).mean() * total
+    norm = total ** 2
+    nu20, nu02, nu11, nu30, nu03, nu21, nu12 = mu20 / norm, mu02 / norm, mu11 / norm, mu30 / norm**1.5, mu03 / norm**1.5, mu21 / norm**1.5, mu12 / norm**1.5
+    hu1 = nu20 + nu02
+    hu2 = (nu20 - nu02) ** 2 + 4 * nu11**2
+    hu3 = (nu30 - 3 * nu12) ** 2 + (3 * nu21 - nu03) ** 2
+    hu4 = (nu30 + nu12) ** 2 + (nu21 + nu03) ** 2
+    hu5 = (nu30 - 3 * nu12) * (nu30 + nu12) * ((nu30 + nu12) ** 2 - 3 * (nu21 + nu03) ** 2) + (3 * nu21 - nu03) * (nu21 + nu03) * (3 * (nu30 + nu12) ** 2 - (nu21 + nu03) ** 2)
+    hu6 = (nu20 - nu02) * ((nu30 + nu12) ** 2 - (nu21 + nu03) ** 2) + 4 * nu11 * (nu30 + nu12) * (nu21 + nu03)
+    hu7 = (3 * nu21 - nu03) * (nu30 + nu12) * ((nu30 + nu12) ** 2 - 3 * (nu21 + nu03) ** 2) - (nu30 - 3 * nu12) * (nu21 + nu03) * (3 * (nu30 + nu12) ** 2 - (nu21 + nu03) ** 2)
+    return [hu1, hu2, hu3, hu4, hu5, hu6, hu7]
+
+
+def zernike_moments(mask):
+    rows, columns = np.where(mask)
+    y = rows.astype(float)
+    x = columns.astype(float)
+    center_y, center_x = y.mean(), x.mean()
+    scale = math.sqrt((len(x) * len(x)) / math.pi)
+    if scale == 0:
+        return [0.0] * 9
+    y = (y - center_y) / scale
+    x = (x - center_x) / scale
+    radius = np.sqrt(x * x + y * y)
+    valid = radius <= 1
+    x, y, radius = x[valid], y[valid], radius[valid]
+    moments = []
+    for order, terms in ((0, [0]), (1, [-1, 1]), (2, [-2, 0, 2]), (3, [-3, -1, 1, 3]), (4, [-4, -2, 0, 2, 4])):
+        for power in terms:
+            polynomial = sum(((-1) ** k) * math.factorial(order - k) / (math.factorial(k) * math.factorial((order + power) // 2) * math.factorial((order - power) // 2)) * radius ** (order - 2 * k) for k in range((order - abs(power)) // 2 + 1))
+            value = np.sum((x + 1j * y) ** power * polynomial) / max(1, len(x))
+            moments.append(float(abs(value)))
+    return moments[:9]
+
+
+def fourier_descriptors(mask):
+    points = boundary_points(mask)
+    if len(points) < 2:
+        return [0.0] * 16
+    center_y, center_x = points[:, 0].mean(), points[:, 1].mean()
+    angles = np.arctan2(points[:, 0] - center_y, points[:, 1] - center_x)
+    ordered = points[np.argsort(angles)]
+    radius = np.hypot(ordered[:, 0] - center_y, ordered[:, 1] - center_x)
+    spectrum = np.abs(np.fft.rfft(radius - radius.mean())) / max(1, len(radius))
+    return [float(value) for value in spectrum[1:17]]
+
+
+def reference_distances(mask, reference, distance):
+    points = boundary_points(mask).astype(float)
+    other = boundary_points(reference).astype(float)
+    if len(points) > 128:
+        points = points[np.linspace(0, len(points) - 1, 128).astype(int)]
+    if len(other) > 128:
+        other = other[np.linspace(0, len(other) - 1, 128).astype(int)]
+    if not len(points) or not len(other):
+        return 0.0
+    forward = np.sqrt(((points[:, None, :] - other[None, :, :]) ** 2).sum(axis=2)).min(axis=1)
+    backward = np.sqrt(((other[:, None, :] - points[None, :, :]) ** 2).sum(axis=2)).min(axis=1)
+    return float(forward.max() if distance == "hausdorff_distance" else (forward.mean() + backward.mean()) / 2)
+
+
+def rle_columns(segmentation):
+    if not isinstance(segmentation, dict):
+        return {}, 0
+    counts = segmentation.get("counts", [])
+    if isinstance(counts, str):
+        counts = decode_compressed_counts(counts)
+    height, width = segmentation.get("size", [0, 0])
+    if not counts or not height or not width:
+        return {}, 0
+    columns = {}
+    area = 0
+    position = 0
+    for run_index, count in enumerate(counts):
+        if run_index % 2 == 0:
+            position += count
+            continue
+        area += count
+        remaining = count
+        while remaining > 0 and position < height * width:
+            column, row = divmod(position, height)
+            length = min(remaining, height - row)
+            columns.setdefault(column, []).append((row, row + length))
+            position += length
+            remaining -= length
+        position += remaining
+    return columns, area
+
+
+def interval_symmetric_length(left, right):
+    total = 0
+    for start, end in left:
+        for other_start, other_end in right:
+            total += max(0, min(end, other_end) - max(start, other_start))
+    return sum(end - start for start, end in left) + sum(end - start for start, end in right) - 2 * total
+
+
+def rle_perimeter(columns):
+    perimeter = 2 * sum(len(intervals) for intervals in columns.values())
+    ordered = sorted(columns)
+    for previous, current in zip(ordered, ordered[1:]):
+        if current == previous + 1:
+            perimeter += interval_symmetric_length(columns[previous], columns[current])
+    return float(perimeter)
+
+
+def rle_hu_moments(columns, area):
+    sums = np.zeros(9, dtype=float)
+    for column, intervals in columns.items():
+        for start, end in intervals:
+            count = end - start
+            y1, y0 = end - 1, start - 1
+            sy = (y1 * (y1 + 1) - y0 * (y0 + 1)) / 2
+            sy2 = (y1 * (y1 + 1) * (2 * y1 + 1) - y0 * (y0 + 1) * (2 * y0 + 1)) / 6
+            sy3 = (y1 * (y1 + 1) / 2) ** 2 - (y0 * (y0 + 1) / 2) ** 2
+            sums += [count, column * count, column**2 * count, column**3 * count, column * sy, column**2 * sy, column * sy2, sy3, column * sy2]
+    total = float(area)
+    cx, cy = sums[1] / total, sums[2] / total
+    x, y = sums[3] - 3 * cx * sums[1] + 3 * cx**2 * total - cx**3 * total, sums[7] - 3 * cy * sums[2] + 3 * cy**2 * total - cy**3 * total
+    x2y = sums[5] - 2 * cx * sums[4] + cx**2 * sums[2] - cx**3 * total
+    xy2 = sums[6] - 2 * cy * sums[4] + cy**2 * sums[1] - cy**3 * total
+    mu20, mu02, mu11 = x / total, y / total, (sums[4] - cx * sums[2] - cy * sums[1] + cx * cy * total) / total
+    mu30, mu03, mu21, mu12 = x2y / total, xy2 / total, (sums[6] - cx * sums[5] - 2 * cy * sums[4] + 2 * cx * cy * sums[2] + cy**2 * sums[1] - cx * cy**2 * total) / total, (sums[8] - cy * sums[7] - 2 * cx * sums[4] + 2 * cx * cy * sums[2] + cx**2 * sums[2] - cx**2 * cy * total) / total
+    norm = total**2
+    nu20, nu02, nu11 = mu20 / norm, mu02 / norm, mu11 / norm
+    nu30, nu03, nu21, nu12 = mu30 / norm**1.5, mu03 / norm**1.5, mu21 / norm**1.5, mu12 / norm**1.5
+    hu1 = nu20 + nu02
+    hu2 = (nu20 - nu02) ** 2 + 4 * nu11**2
+    hu3 = (nu30 - 3 * nu12) ** 2 + (3 * nu21 - nu03) ** 2
+    hu4 = (nu30 + nu12) ** 2 + (nu21 + nu03) ** 2
+    hu5 = (nu30 - 3 * nu12) * (nu30 + nu12) * ((nu30 + nu12) ** 2 - 3 * (nu21 + nu03) ** 2) + (3 * nu21 - nu03) * (nu21 + nu03) * (3 * (nu30 + nu12) ** 2 - (nu21 + nu03) ** 2)
+    hu6 = (nu20 - nu02) * ((nu30 + nu12) ** 2 - (nu21 + nu03) ** 2) + 4 * nu11 * (nu30 + nu12) * (nu21 + nu03)
+    hu7 = (3 * nu21 - nu03) * (nu30 + nu12) * ((nu30 + nu12) ** 2 - 3 * (nu21 + nu03) ** 2) - (nu30 - 3 * nu12) * (nu21 + nu03) * (3 * (nu30 + nu12) ** 2 - (nu21 + nu03) ** 2)
+    return [hu1, hu2, hu3, hu4, hu5, hu6, hu7]
+
+
+def shape_values(annotation, descriptors, reference=None):
+    columns, area = rle_columns(annotation.get("segmentation"))
+    if not area:
+        return {}
+    bbox = annotation.get("bbox", [0, 0, 1, 1])
+    width, height = max(1, bbox[2]), max(1, bbox[3])
+    perimeter = rle_perimeter(columns)
+    values = {}
+    for descriptor in descriptors:
+        if descriptor == "aspect_ratio":
+            values[descriptor] = float(width / height)
+        elif descriptor == "compactness":
+            values[descriptor] = float(4 * math.pi * area / max(1.0, perimeter**2))
+        elif descriptor == "normalized_perimeter":
+            values[descriptor] = float(perimeter / math.sqrt(area))
+        elif descriptor == "hu_moments":
+            values[descriptor] = rle_hu_moments(columns, area)
+    advanced = set(descriptors) - {"aspect_ratio", "compactness", "normalized_perimeter", "hu_moments"}
+    if not advanced:
+        return values
+    cropped = cropped_mask(annotation)
+    if cropped is None:
+        return values
+    mask, _ = cropped
+    points = boundary_points(mask)
+    for descriptor in advanced:
+        if descriptor == "solidity":
+            hull = convex_hull(points[:, ::-1])
+            values[descriptor] = float(area / max(1.0, polygon_area(hull)))
+        elif descriptor == "convexity":
+            hull = convex_hull(points[:, ::-1])
+            values[descriptor] = float(min(1.0, polygon_perimeter(hull) / max(1.0, perimeter)))
+        elif descriptor == "eccentricity":
+            rows, columns_pixels = np.where(mask)
+            covariance = np.cov(np.vstack([columns_pixels, rows])) if len(rows) > 1 else np.zeros((2, 2))
+            eigenvalues = np.linalg.eigvalsh(covariance)
+            major, minor = max(eigenvalues), max(0.0, min(eigenvalues))
+            values[descriptor] = float(math.sqrt(max(0.0, 1 - minor / major))) if major else 0.0
+        elif descriptor == "zernike_moments":
+            values[descriptor] = zernike_moments(mask)
+        elif descriptor == "fourier_descriptors":
+            values[descriptor] = fourier_descriptors(mask)
+        elif descriptor in {"hausdorff_distance", "chamfer_distance"} and reference is not None:
+            values[descriptor] = reference_distances(mask, reference, descriptor)
+    return values
 
 
 def apply_mask_strokes(segmentation, strokes):
@@ -378,6 +654,150 @@ def start_island_frequency_job(workers=0):
     return job_id
 
 
+def descriptor_items(values):
+    items = {}
+    for descriptor, value in values.items():
+        if isinstance(value, list):
+            for index, item in enumerate(value, start=1):
+                items[f"{descriptor}_{index}"] = float(item)
+        else:
+            items[descriptor] = float(value)
+    return items
+
+
+def build_shape_summary(values, elapsed):
+    grouped = {}
+    vector_descriptors = {"hu_moments", "zernike_moments", "fourier_descriptors"}
+    for class_values in values.values():
+        for descriptor, raw_values in class_values.items():
+            if descriptor in vector_descriptors:
+                for vector in raw_values:
+                    for index, value in enumerate(vector, start=1):
+                        grouped.setdefault(f"{descriptor}_{index}", []).append(float(value))
+            else:
+                grouped.setdefault(descriptor, []).extend(float(value) for value in raw_values)
+    descriptors = {}
+    for key, entries in grouped.items():
+        array = np.asarray([float(value) for value in entries if value is not None and math.isfinite(float(value))], dtype=float)
+        if not len(array):
+            continue
+        base = next((name for name in SHAPE_DESCRIPTORS if key == name or key.startswith(f"{name}_")), key)
+        if float(np.min(array)) == float(np.max(array)):
+            edges = np.asarray([float(np.min(array)), float(np.min(array)) + 1])
+            counts = np.asarray([len(array)])
+        else:
+            counts, edges = np.histogram(array, bins=min(20, max(1, len(array))))
+        descriptors[key] = {
+            "label": SHAPE_DESCRIPTORS.get(base, base),
+            "count": len(array),
+            "mean": float(np.mean(array)),
+            "std": float(np.std(array)),
+            "min": float(np.min(array)),
+            "p05": float(np.percentile(array, 5)),
+            "median": float(np.percentile(array, 50)),
+            "p95": float(np.percentile(array, 95)),
+            "max": float(np.max(array)),
+            "histogram": [[float(edges[index]), float(edges[index + 1]), int(counts[index])] for index in range(len(counts))],
+        }
+    return {"elapsed_seconds": round(elapsed, 3), "descriptors": descriptors}
+
+
+def shape_range(arguments):
+    indices, descriptors, class_ids = arguments
+    data = _dataset or load_dataset()
+    class_values = {}
+    skipped = 0
+    for index in indices:
+        annotation = data["annotations"][index]
+        category_id = str(annotation.get("category_id"))
+        values = shape_values(annotation, descriptors, _shape_references.get(category_id))
+        if not values:
+            skipped += 1
+            continue
+        target = class_values.setdefault(category_id, {})
+        for key, value in values.items():
+            target.setdefault(key, []).append(value)
+    return {"class_values": class_values, "processed": len(indices), "skipped": skipped}
+
+
+def run_shape_descriptors(job_id, descriptors, class_ids, workers):
+    global _shape_references
+    started = time.monotonic()
+    try:
+        data = load_dataset()
+        selected = [annotation for annotation in data["annotations"] if not class_ids or str(annotation.get("category_id")) in class_ids]
+        selected_indices = [index for index, annotation in enumerate(data["annotations"]) if not class_ids or str(annotation.get("category_id")) in class_ids]
+        total = len(selected_indices)
+        worker_count = max(1, min(available_cpu_count(), workers or available_cpu_count(), total or 1))
+        _shape_references = {}
+        if "hausdorff_distance" in descriptors or "chamfer_distance" in descriptors:
+            for category in data["categories"]:
+                category_id = str(category["id"])
+                if class_ids and category_id not in class_ids:
+                    continue
+                reference = next((annotation for annotation in selected if str(annotation.get("category_id")) == category_id), None)
+                if reference:
+                    cropped = cropped_mask(reference)
+                    if cropped:
+                        _shape_references[category_id] = cropped[0]
+        chunk_target = worker_count * 4
+        chunk_size = max(1, (total + chunk_target - 1) // chunk_target)
+        bounds = [selected_indices[start : start + chunk_size] for start in range(0, total, chunk_size)]
+        update_shape_job(job_id, status="running", total=total, processed=0, progress=0, workers=worker_count, available_cpus=available_cpu_count())
+        merged = {}
+        skipped = 0
+        processed = 0
+        pool = get_context("fork").Pool(processes=worker_count)
+        try:
+            arguments = [(bound, descriptors, class_ids) for bound in bounds]
+            for result in pool.imap_unordered(shape_range, arguments):
+                processed += result["processed"]
+                skipped += result["skipped"]
+                for category_id, values in result["class_values"].items():
+                    target = merged.setdefault(category_id, {})
+                    for descriptor, descriptor_values in values.items():
+                        target.setdefault(descriptor, []).extend(descriptor_values)
+                update_shape_job(job_id, processed=processed, progress=round(processed * 100 / total, 3) if total else 100, elapsed_seconds=round(time.monotonic() - started, 3))
+        finally:
+            pool.terminate()
+            pool.join()
+        categories = [
+            {"id": category["id"], "name": category["name"], "summary": build_shape_summary({category["id"]: merged.get(str(category["id"]), {})}, time.monotonic() - started)}
+            for category in data["categories"]
+            if not class_ids or str(category["id"]) in class_ids
+        ]
+        update_shape_job(job_id, status="completed", processed=total, progress=100, result={"descriptors": descriptors, "class_ids": class_ids, "categories": categories, "skipped": skipped, "processed": total, "workers": worker_count})
+    except Exception:
+        update_shape_job(job_id, status="error", error=traceback.format_exc(), elapsed_seconds=round(time.monotonic() - started, 3))
+
+
+def update_shape_job(job_id, **values):
+    with _jobs_lock:
+        _shape_jobs[job_id].update(values)
+
+
+def start_shape_descriptor_job(payload):
+    descriptors = payload.get("descriptors", [])
+    class_ids = [str(value) for value in payload.get("class_ids", [])]
+    invalid = [descriptor for descriptor in descriptors if descriptor not in SHAPE_DESCRIPTORS]
+    if not descriptors or invalid:
+        raise ValueError("Select at least one valid descriptor")
+    with _jobs_lock:
+        for job in _shape_jobs.values():
+            if job["status"] in {"queued", "running"}:
+                return job["id"]
+        job_id = uuid.uuid4().hex
+        _shape_jobs[job_id] = {"id": job_id, "status": "queued", "processed": 0, "total": 0, "progress": 0, "workers": 0, "created_at": time.time(), "descriptors": descriptors, "class_ids": class_ids}
+    threading.Thread(target=run_shape_descriptors, args=(job_id, descriptors, class_ids, WORKERS), daemon=True).start()
+    return job_id
+
+
+def get_shape_descriptor_job(job_id):
+    with _jobs_lock:
+        job = _shape_jobs.get(job_id)
+        return dict(job) if job else None
+
+
 def get_island_frequency_job(job_id):
     with _jobs_lock:
         job = _jobs.get(job_id)
@@ -397,6 +817,14 @@ class Handler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         if path == "/api/tools/island-frequency/start":
             self.send_json({"job_id": start_island_frequency_job(WORKERS)})
+            return
+        if path == "/api/tools/shape-descriptors/start":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                payload = json.loads(self.rfile.read(length) or b"{}")
+                self.send_json({"job_id": start_shape_descriptor_job(payload)})
+            except (ValueError, TypeError, json.JSONDecodeError) as error:
+                self.send_error(HTTPStatus.BAD_REQUEST, str(error))
             return
         if path != "/api/export":
             self.send_error(HTTPStatus.NOT_FOUND)
@@ -487,6 +915,14 @@ class Handler(BaseHTTPRequestHandler):
                     "category_colors": data["category_colors"],
                 }
                 self.send_json(body, send_body)
+                return
+            if path == "/api/tools/shape-descriptors/status":
+                job_id = parse_qs(parsed.query).get("job_id", [""])[0]
+                job = get_shape_descriptor_job(job_id)
+                if job is None:
+                    self.send_error(HTTPStatus.NOT_FOUND, "Shape Descriptor job not found")
+                    return
+                self.send_json(job, send_body)
                 return
             if path == "/api/tools/island-frequency/status":
                 job_id = parse_qs(parsed.query).get("job_id", [""])[0]

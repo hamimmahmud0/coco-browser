@@ -151,6 +151,26 @@ The inspector's **Edit mask** mode supports add/erase brush strokes and a brush-
 
 **Split instance** mode lets you click one or more colored mask islands, choose a replacement class, and create a new COCO instance from only those islands. The original instance is marked removed; the split is undoable and appears in exports.
 
+## Shape Descriptor Lab
+
+Open **Tools → Shape Descriptor Lab**. The tool does not calculate every descriptor on launch. Select a subgroup of descriptors and classes, then run only that measurement.
+
+Available descriptors:
+
+- Aspect ratio
+- Compactness / circularity
+- Solidity
+- Convexity
+- Eccentricity
+- Normalized perimeter
+- Hu moments
+- Zernike moments
+- Fourier descriptors
+- Hausdorff distance
+- Chamfer distance
+
+The first nine descriptors are calculated from the instance mask. Hausdorff and Chamfer compare each mask against the first valid instance in its selected class as a reference. Results are grouped by class and include count, mean, standard deviation, min, P05, median, P95, max, and a histogram for every selected descriptor group.
+
 ## Editing Model
 
 ### Existing annotations

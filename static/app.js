@@ -24,6 +24,7 @@ const state = {
   loadToken: 0,
   nextNewId: 1,
   activeToolJob: null,
+  shapeResult: null,
   inspectIslandCount: null,
   inspectInstances: [],
   inspectSelected: null,
@@ -116,6 +117,27 @@ const elements = {
   inspectSplitApply: document.querySelector("#inspect-split-apply"),
   inspectDeleteInstance: document.querySelector("#inspect-delete-instance"),
   inspectEditStatus: document.querySelector("#inspect-edit-status"),
+  shapeDescriptorTool: document.querySelector("#shape-descriptor-tool"),
+  shapeModal: document.querySelector("#shape-modal"),
+  closeShapeModal: document.querySelector("#close-shape-modal"),
+  shapeSetup: document.querySelector("#shape-setup"),
+  shapeResults: document.querySelector("#shape-results"),
+  shapeDescriptorList: document.querySelector("#shape-descriptor-list"),
+  shapeClassList: document.querySelector("#shape-class-list"),
+  shapeDescriptorsAll: document.querySelector("#shape-descriptors-all"),
+  shapeDescriptorsNone: document.querySelector("#shape-descriptors-none"),
+  shapeClassesAll: document.querySelector("#shape-classes-all"),
+  shapeClassesNone: document.querySelector("#shape-classes-none"),
+  shapeSelectionSummary: document.querySelector("#shape-selection-summary"),
+  shapeRunProgress: document.querySelector("#shape-run-progress"),
+  shapeRunProgressBar: document.querySelector("#shape-run-progress-bar"),
+  shapeRunProgressCount: document.querySelector("#shape-run-progress-count"),
+  runShapeDescriptors: document.querySelector("#run-shape-descriptors"),
+  shapeResultSummary: document.querySelector("#shape-result-summary"),
+  shapeDetailClass: document.querySelector("#shape-detail-class"),
+  shapeDetailDescriptor: document.querySelector("#shape-detail-descriptor"),
+  shapeDetailChart: document.querySelector("#shape-detail-chart"),
+  shapeClassResults: document.querySelector("#shape-class-results"),
   toast: document.querySelector("#toast"),
 };
 
@@ -123,6 +145,10 @@ const toolRegistry = {
   islandFrequency: {
     label: "Island Frequency",
     run: runIslandFrequency,
+  },
+  shapeDescriptors: {
+    label: "Shape Descriptor Lab",
+    run: openShapeDescriptorLab,
   },
 };
 
@@ -329,6 +355,233 @@ async function runIslandFrequency() {
   } finally {
     state.activeToolJob = null;
   }
+}
+
+const shapeDescriptorCatalog = [
+  ["aspect_ratio", "Aspect ratio", "w/h; scale invariant"],
+  ["compactness", "Compactness / circularity", "4πA/P²; scale and rotation invariant"],
+  ["solidity", "Solidity", "A/Aconvex hull; scale and rotation invariant"],
+  ["convexity", "Convexity", "Boundary regularity; scale and rotation invariant"],
+  ["eccentricity", "Eccentricity", "Second-moment elongation"],
+  ["normalized_perimeter", "Normalized perimeter", "P/√A; boundary complexity"],
+  ["hu_moments", "Hu moments", "7 global Hu moment values"],
+  ["zernike_moments", "Zernike moments", "9 complex-moment magnitudes"],
+  ["fourier_descriptors", "Fourier descriptors", "16 normalized boundary frequencies"],
+  ["hausdorff_distance", "Hausdorff distance", "Compared with first valid class reference"],
+  ["chamfer_distance", "Chamfer distance", "Compared with first valid class reference"],
+];
+
+function openShapeDescriptorLab() {
+  renderShapeSetup();
+  state.shapeResult = null;
+  elements.shapeRunProgress.hidden = true;
+  elements.shapeSetup.hidden = false;
+  elements.shapeResults.hidden = true;
+  elements.shapeModal.hidden = false;
+  document.querySelector(".tools-menu")?.removeAttribute("open");
+}
+
+function closeShapeModal() {
+  if (!elements.shapeResults.hidden) {
+    elements.shapeResults.hidden = true;
+    elements.shapeSetup.hidden = false;
+    elements.shapeRunProgress.hidden = true;
+    return;
+  }
+  elements.shapeModal.hidden = true;
+}
+
+function renderShapeSetup() {
+  if (!state.dataset) return;
+  if (!elements.shapeDescriptorList.children.length) {
+    for (const [key, label, note] of shapeDescriptorCatalog) {
+      const labelNode = element("label", "shape-check");
+      const input = document.createElement("input");
+      input.type = "checkbox";
+      input.dataset.descriptor = key;
+      input.addEventListener("change", updateShapeSelectionSummary);
+      const copy = element("span");
+      copy.append(element("strong", "", label), element("small", "", note));
+      labelNode.append(input, copy);
+      elements.shapeDescriptorList.append(labelNode);
+    }
+  }
+  if (!elements.shapeClassList.children.length) {
+    for (const category of state.dataset.categories) {
+      const labelNode = element("label", "shape-check");
+      const input = document.createElement("input");
+      input.type = "checkbox";
+      input.checked = true;
+      input.dataset.categoryId = category.id;
+      input.addEventListener("change", updateShapeSelectionSummary);
+      const copy = element("span");
+      copy.append(element("strong", "", category.name), element("small", "", "Class-level distribution"));
+      labelNode.append(input, copy);
+      elements.shapeClassList.append(labelNode);
+    }
+  }
+  updateShapeSelectionSummary();
+}
+
+function selectedShapeDescriptors() {
+  return [...elements.shapeDescriptorList.querySelectorAll("input:checked")].map((input) => input.dataset.descriptor);
+}
+
+function selectedShapeClasses() {
+  return [...elements.shapeClassList.querySelectorAll("input:checked")].map((input) => input.dataset.categoryId);
+}
+
+function updateShapeSelectionSummary() {
+  const descriptors = selectedShapeDescriptors();
+  const classes = selectedShapeClasses();
+  elements.shapeSelectionSummary.textContent = `${descriptors.length} descriptor${descriptors.length === 1 ? "" : "s"} · ${classes.length} class${classes.length === 1 ? "" : "es"} selected`;
+  elements.runShapeDescriptors.disabled = !descriptors.length || !classes.length;
+}
+
+async function runShapeDescriptorLab() {
+  const descriptors = selectedShapeDescriptors();
+  const classIds = selectedShapeClasses();
+  if (!descriptors.length || !classIds.length) return;
+  elements.runShapeDescriptors.disabled = true;
+  elements.shapeRunProgress.hidden = false;
+  elements.shapeRunProgressBar.value = 0;
+  elements.shapeRunProgressCount.textContent = "Starting…";
+  try {
+    const response = await request("/api/tools/shape-descriptors/start", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ descriptors, class_ids: classIds }) });
+    const { job_id: jobId } = await response.json();
+    elements.toolProgressLabel.textContent = `Shape Descriptor Lab · ${descriptors.length} selected`;
+    elements.toolProgressBar.value = 0;
+    elements.toolProgress.hidden = false;
+    while (true) {
+      const statusResponse = await request(`/api/tools/shape-descriptors/status?job_id=${encodeURIComponent(jobId)}`);
+      const job = await statusResponse.json();
+      elements.toolProgressBar.value = job.progress || 0;
+      elements.toolProgressCount.textContent = `${formatNumber(job.processed || 0)} / ${formatNumber(job.total || 0)}`;
+      elements.shapeRunProgressBar.value = job.progress || 0;
+      elements.shapeRunProgressCount.textContent = `${formatNumber(job.processed || 0)} / ${formatNumber(job.total || 0)}`;
+      if (job.status === "completed") {
+        renderShapeResults(job.result);
+        elements.shapeSetup.hidden = true;
+        elements.shapeResults.hidden = false;
+        elements.toolProgress.hidden = true;
+        showToast("Shape descriptor analysis complete");
+        break;
+      }
+      if (job.status === "error") throw new Error(job.error || "Shape descriptor analysis failed");
+      await wait(600);
+    }
+  } catch (error) {
+    elements.toolProgress.hidden = true;
+    elements.shapeRunProgress.hidden = true;
+    showToast(error.message);
+  } finally {
+    updateShapeSelectionSummary();
+  }
+}
+
+function renderShapeResults(result) {
+  state.shapeResult = result;
+  elements.shapeDetailClass.replaceChildren();
+  for (const category of result.categories) {
+    const option = element("option", "", category.name);
+    option.value = category.id;
+    elements.shapeDetailClass.append(option);
+  }
+  elements.shapeDetailDescriptor.replaceChildren();
+  updateShapeDetailDescriptors();
+  drawShapeDetailGraph();
+  elements.shapeResultSummary.replaceChildren();
+  for (const [label, value] of [["Descriptors", result.descriptors.length], ["Classes", result.categories.length], ["Instances", result.processed], ["Skipped", result.skipped], ["Workers", result.workers]]) {
+    const chip = element("div", "shape-result-chip");
+    chip.append(element("strong", "", String(value)), document.createTextNode(` ${label}`));
+    elements.shapeResultSummary.append(chip);
+  }
+  elements.shapeClassResults.replaceChildren();
+  for (const category of result.categories) {
+    const card = element("section", "shape-class-card");
+    const heading = element("div", "shape-class-heading");
+    heading.append(element("strong", "", category.name), element("span", "", `${category.summary.descriptors ? Object.keys(category.summary.descriptors).length : 0} descriptor groups`));
+    card.append(heading);
+    const header = element("div", "shape-descriptor-row header");
+    header.append(element("span", "", "Descriptor"), element("span", "", "Mean"), element("span", "", "Std"), element("span", "", "Min"), element("span", "", "P05"), element("span", "", "Median"), element("span", "", "P95"), element("span", "", "Max"), element("span", "", "Distribution"));
+    card.append(header);
+    for (const descriptor of Object.values(category.summary.descriptors)) {
+      const row = element("div", "shape-descriptor-row");
+      const histogram = element("div", "shape-histogram");
+      const maximum = Math.max(1, ...descriptor.histogram.map((bin) => bin[2]));
+      for (const bin of descriptor.histogram) {
+        const bar = document.createElement("i");
+        bar.style.height = `${Math.max(8, bin[2] / maximum * 100)}%`;
+        bar.title = `${formatNumber(bin[0])}–${formatNumber(bin[1])}: ${formatNumber(bin[2])}`;
+        histogram.append(bar);
+      }
+      row.append(element("span", "", descriptor.label), element("span", "", formatNumber(descriptor.mean)), element("span", "", formatNumber(descriptor.std)), element("span", "", formatNumber(descriptor.min)), element("span", "", formatNumber(descriptor.p05)), element("span", "", formatNumber(descriptor.median)), element("span", "", formatNumber(descriptor.p95)), element("span", "", formatNumber(descriptor.max)), histogram);
+      card.append(row);
+    }
+    elements.shapeClassResults.append(card);
+  }
+}
+
+function updateShapeDetailDescriptors() {
+  if (!state.shapeResult) return;
+  const category = state.shapeResult.categories.find((item) => String(item.id) === elements.shapeDetailClass.value);
+  elements.shapeDetailDescriptor.replaceChildren();
+  for (const [key, descriptor] of Object.entries(category?.summary.descriptors || {})) {
+    const option = element("option", "", descriptor.label);
+    option.value = key;
+    elements.shapeDetailDescriptor.append(option);
+  }
+  drawShapeDetailGraph();
+}
+
+function drawShapeDetailGraph() {
+  if (!state.shapeResult) return;
+  const category = state.shapeResult.categories.find((item) => String(item.id) === elements.shapeDetailClass.value);
+  const descriptor = category?.summary.descriptors?.[elements.shapeDetailDescriptor.value];
+  const canvas = elements.shapeDetailChart;
+  const chart = canvas.getContext("2d");
+  const width = canvas.width;
+  const height = canvas.height;
+  chart.clearRect(0, 0, width, height);
+  if (!descriptor) return;
+  const margin = { top: 28, right: 28, bottom: 65, left: 78 };
+  const plotWidth = width - margin.left - margin.right;
+  const plotHeight = height - margin.top - margin.bottom;
+  const maximum = Math.max(1, ...descriptor.histogram.map((bin) => bin[2]));
+  chart.font = "12px system-ui";
+  chart.strokeStyle = "#2b3443";
+  chart.fillStyle = "#8f9bad";
+  chart.textAlign = "right";
+  for (let step = 0; step <= 5; step += 1) {
+    const y = margin.top + plotHeight * step / 5;
+    chart.beginPath();
+    chart.moveTo(margin.left, y);
+    chart.lineTo(width - margin.right, y);
+    chart.stroke();
+    chart.fillText(formatNumber(maximum * (1 - step / 5)), margin.left - 10, y + 4);
+  }
+  const slot = plotWidth / Math.max(1, descriptor.histogram.length);
+  const barWidth = Math.max(3, slot * 0.76);
+  descriptor.histogram.forEach((bin, index) => {
+    const barHeight = bin[2] / maximum * plotHeight;
+    const x = margin.left + index * slot + (slot - barWidth) / 2;
+    const y = margin.top + plotHeight - barHeight;
+    const gradient = chart.createLinearGradient(0, y, 0, margin.top + plotHeight);
+    gradient.addColorStop(0, "#a78bfa");
+    gradient.addColorStop(1, "#5b3df5");
+    chart.fillStyle = gradient;
+    chart.fillRect(x, y, barWidth, barHeight);
+    chart.save();
+    chart.translate(x + barWidth / 2, margin.top + plotHeight + 15);
+    chart.rotate(-0.5);
+    chart.textAlign = "right";
+    chart.fillStyle = "#aab4c2";
+    chart.fillText(formatNumber(bin[0]), 0, 0);
+    chart.restore();
+  });
+  chart.fillStyle = "#cbd3df";
+  chart.textAlign = "center";
+  chart.fillText(`${category.name} · ${descriptor.label}`, margin.left + plotWidth / 2, height - 12);
 }
 
 function renderIslandResults(result) {
@@ -654,7 +907,16 @@ function applySplitInstance() {
   refreshCurrentImageState();
   persist();
   commitHistory("Split instance", before);
-  elements.inspectModal.hidden = true;
+  const splitReference = { annotation_id: newAnnotation.id, image_id: newAnnotation.image_id, category_id: newAnnotation.category_id, score: newAnnotation.score };
+  state.inspectInstances = [splitReference, ...state.inspectInstances.filter((reference) => reference.annotation_id !== original.id)];
+  elements.inspectInstanceCount.textContent = `${formatNumber(state.inspectInstances.length)} instances`;
+  elements.inspectModalSubtitle.textContent = `Split result · ${state.inspectSelectedIslands.size} selected islands · class ${categoryName(newAnnotation.category_id)}`;
+  state.inspectSelected = null;
+  state.inspectSplitMode = false;
+  state.inspectSelectedIslands = new Set();
+  renderInspectObjectList();
+  updateInspectEditControls();
+  selectInspectInstance(splitReference);
   showToast(`Created split instance #${newAnnotation.id} · original marked removed`);
 }
 
@@ -726,7 +988,7 @@ async function selectInspectInstance(reference) {
       data = await response.json();
       inspectImageCache.set(reference.image_id, data);
     }
-    const annotation = data.annotations.find((item) => item.id === reference.annotation_id);
+    const annotation = data.annotations.find((item) => item.id === reference.annotation_id) || state.created.find((item) => item.id === reference.annotation_id);
     if (!annotation) throw new Error("Instance annotation was not found");
     state.inspectImageData = { image: data.image, annotation };
     elements.inspectLoading.hidden = true;
@@ -1787,6 +2049,30 @@ elements.clearReview.addEventListener("click", () => setReview(null));
 elements.exportCurrent.addEventListener("click", downloadCurrent);
 elements.exportAll.addEventListener("click", exportAll);
 elements.islandFrequencyTool.addEventListener("click", () => toolRegistry.islandFrequency.run());
+elements.shapeDescriptorTool.addEventListener("click", () => toolRegistry.shapeDescriptors.run());
+elements.closeShapeModal.addEventListener("click", closeShapeModal);
+elements.shapeModal.addEventListener("click", (event) => {
+  if (event.target === elements.shapeModal) closeShapeModal();
+});
+elements.shapeDescriptorsAll.addEventListener("click", () => {
+  for (const input of elements.shapeDescriptorList.querySelectorAll("input")) input.checked = true;
+  updateShapeSelectionSummary();
+});
+elements.shapeDescriptorsNone.addEventListener("click", () => {
+  for (const input of elements.shapeDescriptorList.querySelectorAll("input")) input.checked = false;
+  updateShapeSelectionSummary();
+});
+elements.shapeClassesAll.addEventListener("click", () => {
+  for (const input of elements.shapeClassList.querySelectorAll("input")) input.checked = true;
+  updateShapeSelectionSummary();
+});
+elements.shapeClassesNone.addEventListener("click", () => {
+  for (const input of elements.shapeClassList.querySelectorAll("input")) input.checked = false;
+  updateShapeSelectionSummary();
+});
+elements.runShapeDescriptors.addEventListener("click", runShapeDescriptorLab);
+elements.shapeDetailClass.addEventListener("change", updateShapeDetailDescriptors);
+elements.shapeDetailDescriptor.addEventListener("change", drawShapeDetailGraph);
 elements.inspectEditToggle.addEventListener("click", () => {
   state.inspectEditMode = !state.inspectEditMode;
   updateInspectEditControls();
@@ -1884,6 +2170,10 @@ document.addEventListener("keydown", (event) => {
   }
   if (key === "delete" || key === "backspace") setReview("remove");
   if (key === "escape") {
+    if (!elements.shapeModal.hidden) {
+      closeShapeModal();
+      return;
+    }
     if (!elements.inspectModal.hidden) {
       elements.inspectModal.hidden = true;
       return;
