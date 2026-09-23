@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
   <title>COCO 1.0 Annotation Browser</title>
-  <link rel="stylesheet" href="/style.css?v=12">
+  <link rel="stylesheet" href="/style.css?v=24">
 </head>
 <body>
   <header class="topbar">
@@ -17,6 +17,20 @@
       </div>
     </div>
     <div class="header-actions">
+      <details class="tools-menu">
+        <summary>Tools</summary>
+        <div class="tools-popover">
+          <button id="island-frequency-tool" class="tool-menu-item" type="button">
+            <strong>Island Frequency</strong>
+            <span>Count connected mask regions across every instance</span>
+          </button>
+        </div>
+      </details>
+      <div class="history-toolbar">
+        <button id="undo" class="button secondary" type="button" title="Undo (Ctrl/Cmd+Z)">Undo</button>
+        <button id="redo" class="button secondary" type="button" title="Redo (Ctrl/Cmd+Shift+Z)">Redo</button>
+        <select id="history-select" title="History"></select>
+      </div>
       <span id="save-state" class="save-state">Local edits enabled</span>
       <button id="export-current" class="button secondary">Export image</button>
       <button id="export-all" class="button primary">Export full COCO</button>
@@ -105,12 +119,92 @@
           <span><kbd>Delete</kbd> remove</span>
           <span><kbd>1–8</kbd> category</span>
         </div>
+        <div id="tool-progress" class="tool-progress" hidden>
+          <strong id="tool-progress-label">Island Frequency</strong>
+          <progress id="tool-progress-bar" max="100" value="0"></progress>
+          <span id="tool-progress-count">0 / 0</span>
+        </div>
         <div id="object-status"></div>
       </footer>
     </section>
   </main>
 
+  <div id="tool-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="tool-modal-title" hidden>
+    <div class="modal-card">
+      <div class="modal-header">
+        <div>
+          <h2 id="tool-modal-title">Island Frequency</h2>
+          <p>Connected components per detection instance using 4-connectivity</p>
+        </div>
+        <button id="close-tool-modal" class="icon-button" type="button" title="Close">×</button>
+      </div>
+      <div id="island-summary" class="summary-grid"></div>
+      <div class="chart-section">
+        <div class="chart-heading">
+          <strong>Island count frequency distribution</strong>
+          <span id="frequency-total"></span>
+        </div>
+        <canvas id="frequency-chart" width="1100" height="420"></canvas>
+      </div>
+      <div class="inspection-options">
+        <div class="chart-heading">
+          <strong>Inspect instances by island count</strong>
+          <span>Choose N to open the instance inspector</span>
+        </div>
+        <div id="island-inspection-options"></div>
+      </div>
+      <div class="category-results">
+        <h3>By category</h3>
+        <div id="category-frequency-table"></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="inspect-modal" class="modal inspect-modal" role="dialog" aria-modal="true" aria-labelledby="inspect-modal-title" hidden>
+    <div class="modal-card inspect-card">
+      <div class="modal-header">
+        <div>
+          <h2 id="inspect-modal-title">Island Inspector</h2>
+          <p id="inspect-modal-subtitle">Select an instance to inspect its individual mask islands</p>
+        </div>
+        <button id="close-inspect-modal" class="icon-button" type="button" title="Close">×</button>
+      </div>
+      <div class="inspect-toolbar">
+        <button id="inspect-edit-toggle" class="button secondary" type="button">Edit mask</button>
+        <button id="inspect-mask-add" class="button secondary" type="button" disabled>Add</button>
+        <button id="inspect-mask-remove" class="button secondary" type="button" disabled>Erase</button>
+        <label class="brush-size">Brush <input id="inspect-brush-size" type="range" min="2" max="80" value="12" disabled><span id="inspect-brush-value">12 px</span></label>
+        <button id="inspect-mask-reset" class="button secondary" type="button" disabled>Reset mask</button>
+        <button id="inspect-split-toggle" class="button secondary" type="button">Split instance</button>
+        <select id="inspect-split-category" title="Class for split instance" disabled></select>
+        <button id="inspect-split-apply" class="button primary" type="button" disabled>Create split</button>
+        <button id="inspect-delete-instance" class="button danger" type="button" disabled>Delete instance</button>
+        <span id="inspect-edit-status" class="inspect-edit-status">Select an instance to edit its mask</span>
+      </div>
+      <div class="inspect-layout">
+        <aside class="inspect-object-panel">
+          <div class="inspect-list-heading">
+            <strong>Instances</strong>
+            <span id="inspect-instance-count"></span>
+          </div>
+          <div id="inspect-object-list"></div>
+        </aside>
+        <section class="inspect-canvas-area">
+          <div id="inspect-loading" class="loading">
+            <div class="spinner"></div>
+            <strong>Select an instance…</strong>
+          </div>
+          <div id="inspect-stage" class="inspect-stage" hidden>
+            <img id="inspect-image" alt="Selected instance image">
+            <canvas id="inspect-overlay"></canvas>
+          </div>
+          <div id="inspect-selection" class="inspect-selection"></div>
+        </section>
+      </div>
+    </div>
+  </div>
+
   <div id="toast" class="toast" role="status"></div>
-  <script src="/app.js?v=12"></script>
+  <script src="/app.js?v=24"></script>
 </body>
 </html>

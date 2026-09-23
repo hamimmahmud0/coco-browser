@@ -23,6 +23,22 @@ const state = {
   drag: null,
   loadToken: 0,
   nextNewId: 1,
+  activeToolJob: null,
+  inspectIslandCount: null,
+  inspectInstances: [],
+  inspectSelected: null,
+  inspectPage: 0,
+  inspectMaskStrokes: [],
+  inspectComponents: [],
+  inspectSelectedIslands: new Set(),
+  inspectSplitMode: false,
+  inspectSplitCategory: 1,
+  inspectHistoryBefore: null,
+  inspectEditMode: false,
+  inspectEditOperation: "add",
+  inspectBrushSize: 12,
+  maskEdits: readStorage("coco-mask-edits", {}),
+  inspectImageData: null,
   reviews: readStorage("coco-reviews", {}),
   edits: readStorage("coco-edits", {}),
   created: readStorage("coco-created", []),
@@ -58,18 +74,62 @@ const elements = {
   annotationStatus: document.querySelector("#annotation-status"),
   objectStatus: document.querySelector("#object-status"),
   saveState: document.querySelector("#save-state"),
+  undo: document.querySelector("#undo"),
+  redo: document.querySelector("#redo"),
+  historySelect: document.querySelector("#history-select"),
   markKeep: document.querySelector("#mark-keep"),
   markFix: document.querySelector("#mark-fix"),
   markRemove: document.querySelector("#mark-remove"),
   clearReview: document.querySelector("#clear-review"),
   exportAll: document.querySelector("#export-all"),
   exportCurrent: document.querySelector("#export-current"),
+  islandFrequencyTool: document.querySelector("#island-frequency-tool"),
+  toolProgress: document.querySelector("#tool-progress"),
+  toolProgressLabel: document.querySelector("#tool-progress-label"),
+  toolProgressBar: document.querySelector("#tool-progress-bar"),
+  toolProgressCount: document.querySelector("#tool-progress-count"),
+  toolModal: document.querySelector("#tool-modal"),
+  closeToolModal: document.querySelector("#close-tool-modal"),
+  islandSummary: document.querySelector("#island-summary"),
+  frequencyChart: document.querySelector("#frequency-chart"),
+  frequencyTotal: document.querySelector("#frequency-total"),
+  categoryFrequencyTable: document.querySelector("#category-frequency-table"),
+  islandInspectionOptions: document.querySelector("#island-inspection-options"),
+  inspectModal: document.querySelector("#inspect-modal"),
+  closeInspectModal: document.querySelector("#close-inspect-modal"),
+  inspectModalSubtitle: document.querySelector("#inspect-modal-subtitle"),
+  inspectObjectList: document.querySelector("#inspect-object-list"),
+  inspectInstanceCount: document.querySelector("#inspect-instance-count"),
+  inspectLoading: document.querySelector("#inspect-loading"),
+  inspectStage: document.querySelector("#inspect-stage"),
+  inspectImage: document.querySelector("#inspect-image"),
+  inspectOverlay: document.querySelector("#inspect-overlay"),
+  inspectSelection: document.querySelector("#inspect-selection"),
+  inspectEditToggle: document.querySelector("#inspect-edit-toggle"),
+  inspectMaskAdd: document.querySelector("#inspect-mask-add"),
+  inspectMaskRemove: document.querySelector("#inspect-mask-remove"),
+  inspectBrushSize: document.querySelector("#inspect-brush-size"),
+  inspectBrushValue: document.querySelector("#inspect-brush-value"),
+  inspectMaskReset: document.querySelector("#inspect-mask-reset"),
+  inspectSplitToggle: document.querySelector("#inspect-split-toggle"),
+  inspectSplitCategory: document.querySelector("#inspect-split-category"),
+  inspectSplitApply: document.querySelector("#inspect-split-apply"),
+  inspectDeleteInstance: document.querySelector("#inspect-delete-instance"),
+  inspectEditStatus: document.querySelector("#inspect-edit-status"),
   toast: document.querySelector("#toast"),
+};
+
+const toolRegistry = {
+  islandFrequency: {
+    label: "Island Frequency",
+    run: runIslandFrequency,
+  },
 };
 
 const context = elements.overlay.getContext("2d");
 let toastTimer = null;
 let saveTimer = null;
+const inspectImageCache = new Map();
 
 function readStorage(key, fallback) {
   try {
@@ -88,12 +148,112 @@ function persist() {
       localStorage.setItem("coco-reviews", JSON.stringify(state.reviews));
       localStorage.setItem("coco-edits", JSON.stringify(state.edits));
       localStorage.setItem("coco-created", JSON.stringify(state.created));
+      localStorage.setItem("coco-mask-edits", JSON.stringify(state.maskEdits));
       elements.saveState.textContent = "Local edits enabled";
     } catch {
       elements.saveState.textContent = "Local storage full";
       showToast("Browser storage is full. Export before closing this tab.");
     }
   }, 200);
+}
+
+function captureHistoryState() {
+  return {
+    reviews: JSON.parse(JSON.stringify(state.reviews)),
+    edits: JSON.parse(JSON.stringify(state.edits)),
+    created: JSON.parse(JSON.stringify(state.created)),
+    maskEdits: JSON.parse(JSON.stringify(state.maskEdits)),
+    nextNewId: state.nextNewId,
+  };
+}
+
+function applyHistoryState(snapshot) {
+  state.reviews = JSON.parse(JSON.stringify(snapshot.reviews));
+  state.edits = JSON.parse(JSON.stringify(snapshot.edits));
+  state.created = JSON.parse(JSON.stringify(snapshot.created));
+  state.maskEdits = JSON.parse(JSON.stringify(snapshot.maskEdits));
+  state.nextNewId = snapshot.nextNewId;
+  refreshCurrentImageState();
+  persist();
+  renderImageList();
+  renderObjects();
+  draw();
+}
+
+function historySignature(snapshot) {
+  return JSON.stringify(snapshot);
+}
+
+const editHistory = [];
+let historyIndex = -1;
+const historyLimit = 100;
+
+function initializeHistory() {
+  editHistory.length = 0;
+  editHistory.push({ label: "Session start", state: captureHistoryState() });
+  historyIndex = 0;
+  renderHistoryToolbar();
+}
+
+function commitHistory(label, before) {
+  if (!before) return;
+  const after = captureHistoryState();
+  if (historySignature(before) === historySignature(after)) return;
+  editHistory.splice(historyIndex + 1);
+  editHistory.push({ label, state: after });
+  if (editHistory.length > historyLimit) editHistory.shift();
+  historyIndex = editHistory.length - 1;
+  renderHistoryToolbar();
+}
+
+function restoreHistory(index) {
+  if (index < 0 || index >= editHistory.length) return;
+  historyIndex = index;
+  applyHistoryState(editHistory[index].state);
+  renderHistoryToolbar();
+}
+
+function undoHistory() {
+  if (historyIndex <= 0) return;
+  restoreHistory(historyIndex - 1);
+  showToast(`Undo: ${editHistory[historyIndex + 1].label}`);
+}
+
+function redoHistory() {
+  if (historyIndex >= editHistory.length - 1) return;
+  restoreHistory(historyIndex + 1);
+  showToast(`Redo: ${editHistory[historyIndex].label}`);
+}
+
+function renderHistoryToolbar() {
+  elements.undo.disabled = historyIndex <= 0;
+  elements.redo.disabled = historyIndex >= editHistory.length - 1;
+  elements.historySelect.replaceChildren();
+  editHistory.forEach((entry, index) => {
+    const option = element("option", "", entry.label);
+    option.value = String(index);
+    option.disabled = index > historyIndex;
+    option.selected = index === historyIndex;
+    elements.historySelect.append(option);
+  });
+}
+
+function refreshCurrentImageState() {
+  if (!state.current || !state.imageData) return;
+  const categoryCounts = {};
+  let annotationCount = 0;
+  for (const annotation of state.imageData.annotations) {
+    if (annotation.image_id !== state.current.id || state.reviews[String(annotation.id)] === "remove") continue;
+    const effective = effectiveAnnotation(annotation);
+    annotationCount += 1;
+    categoryCounts[String(effective.category_id)] = (categoryCounts[String(effective.category_id)] || 0) + 1;
+  }
+  for (const annotation of state.created.filter((item) => item.image_id === state.current.id)) {
+    annotationCount += 1;
+    categoryCounts[String(annotation.category_id)] = (categoryCounts[String(annotation.category_id)] || 0) + 1;
+  }
+  state.current.annotation_count = annotationCount;
+  state.current.category_counts = categoryCounts;
 }
 
 function element(tag, className, text) {
@@ -117,6 +277,650 @@ async function request(url, options) {
     throw new Error(message || `Request failed: ${response.status}`);
   }
   return response;
+}
+
+function wait(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function formatNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number.toLocaleString(undefined, { maximumFractionDigits: 2 }) : String(value);
+}
+
+function updateToolProgress(label, job) {
+  elements.toolProgress.hidden = false;
+  elements.toolProgressLabel.textContent = job.workers ? `${label} · ${job.workers} workers` : label;
+  elements.toolProgressBar.value = job.progress || 0;
+  elements.toolProgressCount.textContent = `${formatNumber(job.processed || 0)} / ${formatNumber(job.total || 0)}`;
+}
+
+async function runIslandFrequency() {
+  if (state.activeToolJob) {
+    showToast("Island Frequency is already running");
+    return;
+  }
+  const tool = toolRegistry.islandFrequency;
+  elements.islandFrequencyTool.closest("details").open = false;
+  elements.toolProgressLabel.textContent = tool.label;
+  elements.toolProgressBar.value = 0;
+  elements.toolProgressCount.textContent = "Starting…";
+  elements.toolProgress.hidden = false;
+  try {
+    const response = await request("/api/tools/island-frequency/start", { method: "POST" });
+    const { job_id: jobId } = await response.json();
+    state.activeToolJob = jobId;
+    while (state.activeToolJob === jobId) {
+      const statusResponse = await request(`/api/tools/island-frequency/status?job_id=${encodeURIComponent(jobId)}`);
+      const job = await statusResponse.json();
+      updateToolProgress(tool.label, job);
+      if (job.status === "completed") {
+        renderIslandResults(job.result);
+        elements.toolProgress.hidden = true;
+        showToast("Island Frequency analysis complete");
+        break;
+      }
+      if (job.status === "error") throw new Error(job.error || "Island Frequency analysis failed");
+      await wait(600);
+    }
+  } catch (error) {
+    elements.toolProgress.hidden = true;
+    showToast(error.message);
+  } finally {
+    state.activeToolJob = null;
+  }
+}
+
+function renderIslandResults(result) {
+  const summary = result.summary;
+  const cards = [
+    ["Instances", summary.instances],
+    ["Total islands", summary.total_islands],
+    ["Mean / instance", summary.mean_islands],
+    ["Median / instance", summary.median_islands],
+    ["Mode", `${summary.mode_islands} islands`],
+    ["Range", `${summary.minimum_islands}–${summary.maximum_islands}`],
+    ["Single-island", summary.single_island_instances],
+    ["Multi-island", summary.multi_island_instances],
+  ];
+  elements.islandSummary.replaceChildren();
+  for (const [label, value] of cards) {
+    const card = element("div", "summary-card");
+    card.append(element("span", "", label), element("strong", "", formatNumber(value)));
+    elements.islandSummary.append(card);
+  }
+  elements.frequencyTotal.textContent = `${formatNumber(summary.instances)} instances · ${summary.elapsed_seconds.toFixed(2)} seconds`;
+  drawFrequencyChart(summary.distribution);
+  renderCategoryFrequency(result.categories);
+  renderInspectionOptions(result.inspection_groups || []);
+  elements.toolModal.hidden = false;
+}
+
+function drawFrequencyChart(distribution) {
+  const canvas = elements.frequencyChart;
+  const chart = canvas.getContext("2d");
+  const width = canvas.width;
+  const height = canvas.height;
+  chart.clearRect(0, 0, width, height);
+  let entries = distribution.map((item) => ({ label: String(item.islands), value: item.instances }));
+  if (entries.length > 30) {
+    const tail = entries.slice(24).reduce((sum, item) => sum + item.value, 0);
+    entries = [...entries.slice(0, 24), { label: `${distribution[distribution.length - 1].islands}+`, value: tail }];
+  }
+  const margin = { top: 25, right: 24, bottom: 58, left: 70 };
+  const plotWidth = width - margin.left - margin.right;
+  const plotHeight = height - margin.top - margin.bottom;
+  const maximum = Math.max(1, ...entries.map((entry) => entry.value));
+  chart.strokeStyle = "#2b3443";
+  chart.lineWidth = 1;
+  chart.font = "11px system-ui";
+  chart.fillStyle = "#8f9bad";
+  chart.textAlign = "right";
+  for (let step = 0; step <= 4; step += 1) {
+    const y = margin.top + plotHeight * step / 4;
+    const value = Math.round(maximum * (1 - step / 4));
+    chart.beginPath();
+    chart.moveTo(margin.left, y);
+    chart.lineTo(width - margin.right, y);
+    chart.stroke();
+    chart.fillText(formatNumber(value), margin.left - 10, y + 4);
+  }
+  const slotWidth = plotWidth / Math.max(1, entries.length);
+  const barWidth = Math.max(3, slotWidth * 0.72);
+  entries.forEach((entry, index) => {
+    const barHeight = entry.value / maximum * plotHeight;
+    const x = margin.left + index * slotWidth + (slotWidth - barWidth) / 2;
+    const y = margin.top + plotHeight - barHeight;
+    const gradient = chart.createLinearGradient(0, y, 0, margin.top + plotHeight);
+    gradient.addColorStop(0, "#a78bfa");
+    gradient.addColorStop(1, "#5b3df5");
+    chart.fillStyle = gradient;
+    chart.fillRect(x, y, barWidth, barHeight);
+    if (entries.length <= 30 || index % 2 === 0 || index === entries.length - 1) {
+      chart.save();
+      chart.translate(x + barWidth / 2, margin.top + plotHeight + 12);
+      chart.rotate(-0.45);
+      chart.textAlign = "right";
+      chart.fillStyle = "#aab4c2";
+      chart.fillText(entry.label, 0, 0);
+      chart.restore();
+    }
+  });
+  chart.fillStyle = "#cbd3df";
+  chart.textAlign = "center";
+  chart.fillText("Islands per detection instance", margin.left + plotWidth / 2, height - 10);
+}
+
+function renderCategoryFrequency(categories) {
+  elements.categoryFrequencyTable.replaceChildren();
+  const header = element("div", "category-table-row header");
+  header.append(element("span", "", "Category"), element("span", "", "Instances"), element("span", "", "Islands"), element("span", "", "Mean"), element("span", "", "Median"), element("span", "", "Multi"));
+  elements.categoryFrequencyTable.append(header);
+  for (const category of categories) {
+    const row = element("div", "category-table-row");
+    row.append(
+      element("span", "", category.name),
+      element("span", "", formatNumber(category.summary.instances)),
+      element("span", "", formatNumber(category.summary.total_islands)),
+      element("span", "", formatNumber(category.summary.mean_islands)),
+      element("span", "", formatNumber(category.summary.median_islands)),
+      element("span", "", formatNumber(category.summary.multi_island_instances)),
+    );
+    elements.categoryFrequencyTable.append(row);
+  }
+}
+
+function renderInspectionOptions(groups) {
+  elements.islandInspectionOptions.replaceChildren();
+  for (const group of groups) {
+    const row = element("div", "inspection-option");
+    row.append(element("strong", "", `${group.islands} islands`), element("span", "", `${formatNumber(group.instances.length)} instances`));
+    const button = element("button", "button secondary", "Inspect");
+    button.type = "button";
+    button.addEventListener("click", () => openIslandInspector(group.islands, group.instances));
+    row.append(button);
+    elements.islandInspectionOptions.append(row);
+  }
+}
+
+function openIslandInspector(islandCount, instances) {
+  state.inspectIslandCount = islandCount;
+  state.inspectInstances = instances;
+  state.inspectSelected = null;
+  state.inspectMaskStrokes = [];
+  state.inspectComponents = [];
+  state.inspectSelectedIslands = new Set();
+  state.inspectSplitMode = false;
+  state.inspectSplitCategory = state.activeCategory;
+  elements.inspectSplitCategory.value = String(state.inspectSplitCategory);
+  state.inspectEditMode = false;
+  state.inspectImageData = null;
+  state.inspectPage = 0;
+  elements.inspectModalSubtitle.textContent = `${islandCount} islands per instance · select an instance to inspect its colored mask regions`;
+  elements.inspectInstanceCount.textContent = `${formatNumber(instances.length)} instances`;
+  elements.inspectLoading.replaceChildren(element("div", "spinner"), element("strong", "", "Select an instance…"));
+  elements.inspectLoading.hidden = false;
+  elements.inspectStage.hidden = true;
+  elements.inspectSelection.replaceChildren();
+  renderInspectObjectList();
+  elements.inspectModal.hidden = false;
+  if (instances.length) selectInspectInstance(instances[0]);
+}
+
+function renderInspectObjectList() {
+  const pageSize = 500;
+  const pageCount = Math.max(1, Math.ceil(state.inspectInstances.length / pageSize));
+  state.inspectPage = Math.max(0, Math.min(pageCount - 1, state.inspectPage || 0));
+  elements.inspectObjectList.replaceChildren();
+  const page = state.inspectInstances.slice(state.inspectPage * pageSize, (state.inspectPage + 1) * pageSize);
+  for (const reference of page) {
+    const button = element("button", "inspect-object-row");
+    button.type = "button";
+    if (reference.annotation_id === state.inspectSelected?.annotation_id) button.classList.add("active");
+    const color = element("span", "object-color");
+    color.style.background = categoryColor(reference.category_id);
+    button.append(color, element("span", "object-name", `#${reference.annotation_id} · ${categoryName(reference.category_id)}`), element("span", "object-score", reference.score?.toFixed(2) || ""));
+    button.addEventListener("click", () => selectInspectInstance(reference));
+    elements.inspectObjectList.append(button);
+  }
+  if (!state.inspectInstances.length) elements.inspectObjectList.append(element("div", "object-empty", "No instances found"));
+  const pagination = element("div", "inspect-pagination");
+  const previous = element("button", "button secondary", "Previous");
+  previous.type = "button";
+  previous.disabled = state.inspectPage === 0;
+  previous.addEventListener("click", () => {
+    state.inspectPage -= 1;
+    renderInspectObjectList();
+  });
+  const next = element("button", "button secondary", "Next");
+  next.type = "button";
+  next.disabled = state.inspectPage >= pageCount - 1;
+  next.addEventListener("click", () => {
+    state.inspectPage += 1;
+    renderInspectObjectList();
+  });
+  pagination.append(previous, element("span", "", `${state.inspectPage + 1} / ${pageCount}`), next);
+  elements.inspectObjectList.append(pagination);
+}
+
+function updateInspectEditControls() {
+  const enabled = Boolean(state.inspectSelected);
+  elements.inspectEditToggle.classList.toggle("active", state.inspectEditMode);
+  elements.inspectEditToggle.textContent = state.inspectEditMode ? "Editing mask" : "Edit mask";
+  elements.inspectMaskAdd.classList.toggle("active", state.inspectEditOperation === "add");
+  elements.inspectMaskRemove.classList.toggle("active", state.inspectEditOperation === "remove");
+  elements.inspectMaskAdd.disabled = !state.inspectEditMode || !enabled;
+  elements.inspectMaskRemove.disabled = !state.inspectEditMode || !enabled;
+  elements.inspectBrushSize.disabled = !state.inspectEditMode || !enabled;
+  elements.inspectMaskReset.disabled = !state.inspectMaskStrokes.length;
+  elements.inspectSplitToggle.classList.toggle("active", state.inspectSplitMode);
+  elements.inspectSplitToggle.textContent = state.inspectSplitMode ? "Selecting islands" : "Split instance";
+  elements.inspectSplitCategory.disabled = !state.inspectSplitMode || !enabled;
+  elements.inspectSplitApply.disabled = !state.inspectSplitMode || !state.inspectSelectedIslands.size || !enabled;
+  elements.inspectDeleteInstance.disabled = !enabled || state.inspectSplitMode;
+  elements.inspectEditStatus.textContent = state.inspectSplitMode
+    ? `Select islands: ${state.inspectSelectedIslands.size} selected`
+    : state.inspectEditMode
+      ? `Paint ${state.inspectEditOperation === "add" ? "add" : "erase"} on the focused instance`
+      : enabled ? "Edit mask to add or erase pixels" : "Select an instance to edit its mask";
+  elements.inspectOverlay.style.cursor = state.inspectEditMode ? "crosshair" : "default";
+}
+
+function saveInspectMaskEdits() {
+  if (!state.inspectSelected) return;
+  if (state.inspectMaskStrokes.length) state.maskEdits[String(state.inspectSelected.annotation_id)] = state.inspectMaskStrokes;
+  else delete state.maskEdits[String(state.inspectSelected.annotation_id)];
+  persist();
+  updateInspectEditControls();
+}
+
+function deleteInspectInstance() {
+  if (!state.inspectSelected) return;
+  const before = captureHistoryState();
+  const annotationId = String(state.inspectSelected.annotation_id);
+  state.reviews[annotationId] = "remove";
+  delete state.maskEdits[annotationId];
+  state.inspectInstances = state.inspectInstances.filter((reference) => String(reference.annotation_id) !== annotationId);
+  state.inspectSelected = null;
+  state.inspectMaskStrokes = [];
+  persist();
+  commitHistory("Delete instance", before);
+  renderInspectObjectList();
+  updateInspectEditControls();
+  if (state.inspectInstances.length) selectInspectInstance(state.inspectInstances[0]);
+  else {
+    elements.inspectImage.removeAttribute("src");
+    elements.inspectStage.hidden = true;
+    elements.inspectLoading.replaceChildren(element("strong", "", "No instances remain in this group"));
+  }
+  showToast("Instance marked for removal · Ctrl/Cmd+Z to undo");
+}
+
+function resetInspectMask() {
+  const before = captureHistoryState();
+  state.inspectMaskStrokes = [];
+  saveInspectMaskEdits();
+  commitHistory("Reset mask", before);
+  drawInspectMask();
+}
+
+function inspectPointerPosition(event) {
+  const rect = elements.inspectOverlay.getBoundingClientRect();
+  const image = state.inspectImageData.image;
+  return {
+    x: Math.max(0, Math.min(image.width, (event.clientX - rect.left) * image.width / rect.width)),
+    y: Math.max(0, Math.min(image.height, (event.clientY - rect.top) * image.height / rect.height)),
+  };
+}
+
+function componentAtInspectPoint(point) {
+  return state.inspectComponents.find((component) => component.intervals.some((interval) => interval.column === Math.floor(point.x) && point.y >= interval.start && point.y < interval.end));
+}
+
+function toggleInspectIsland(point) {
+  const component = componentAtInspectPoint(point);
+  if (!component) return;
+  if (state.inspectSelectedIslands.has(component.id)) state.inspectSelectedIslands.delete(component.id);
+  else state.inspectSelectedIslands.add(component.id);
+  updateInspectEditControls();
+  drawInspectMask();
+}
+
+function encodeSelectedIslands(components, height, width) {
+  const mask = new Uint8Array(height * width);
+  for (const component of components) {
+    for (const interval of component.intervals) {
+      const start = interval.column * height + interval.start;
+      const end = interval.column * height + interval.end;
+      mask.fill(1, start, end);
+    }
+  }
+  const counts = [];
+  let current = 0;
+  let run = 0;
+  let area = 0;
+  let minX = width;
+  let minY = height;
+  let maxX = 0;
+  let maxY = 0;
+  for (let column = 0; column < width; column += 1) {
+    for (let row = 0; row < height; row += 1) {
+      const value = mask[column * height + row];
+      if (value) {
+        area += 1;
+        minX = Math.min(minX, column);
+        minY = Math.min(minY, row);
+        maxX = Math.max(maxX, column + 1);
+        maxY = Math.max(maxY, row + 1);
+      }
+      if (value === current) run += 1;
+      else {
+        counts.push(run);
+        current = 1 - current;
+        run = 1;
+      }
+    }
+  }
+  counts.push(run);
+  return { segmentation: { size: [height, width], counts }, area, bbox: [minX, minY, maxX - minX, maxY - minY] };
+}
+
+function applySplitInstance() {
+  if (!state.inspectImageData || !state.inspectSelectedIslands.size) return;
+  const original = state.inspectImageData.annotation;
+  const selectedComponents = state.inspectComponents.filter((component) => state.inspectSelectedIslands.has(component.id));
+  if (!selectedComponents.length || selectedComponents.some((component) => !component.intervals.length)) {
+    showToast("Split mode requires RLE mask islands");
+    return;
+  }
+  const height = original.segmentation.size?.[0] || state.inspectImageData.image.height;
+  const width = original.segmentation.size?.[1] || state.inspectImageData.image.width;
+  const encoded = encodeSelectedIslands(selectedComponents, height, width);
+  if (!encoded.area) return;
+  const before = captureHistoryState();
+  const newAnnotation = {
+    id: state.nextNewId++,
+    image_id: original.image_id,
+    category_id: Number(elements.inspectSplitCategory.value),
+    segmentation: encoded.segmentation,
+    area: encoded.area,
+    bbox: encoded.bbox,
+    iscrowd: 0,
+    score: 1,
+  };
+  state.created.push(newAnnotation);
+  state.reviews[String(original.id)] = "remove";
+  delete state.maskEdits[String(original.id)];
+  refreshCurrentImageState();
+  persist();
+  commitHistory("Split instance", before);
+  elements.inspectModal.hidden = true;
+  showToast(`Created split instance #${newAnnotation.id} · original marked removed`);
+}
+
+function onInspectPointerDown(event) {
+  if (!state.inspectImageData) return;
+  if (state.inspectSplitMode) {
+    event.preventDefault();
+    toggleInspectIsland(inspectPointerPosition(event));
+    return;
+  }
+  if (!state.inspectEditMode) return;
+  event.preventDefault();
+  state.inspectHistoryBefore = captureHistoryState();
+  const point = inspectPointerPosition(event);
+  state.inspectMaskStrokes.push({ operation: state.inspectEditOperation, radius: state.inspectBrushSize, points: [point] });
+  elements.inspectOverlay.setPointerCapture(event.pointerId);
+  drawInspectMask();
+  updateInspectEditControls();
+}
+
+function onInspectPointerMove(event) {
+  if (!state.inspectEditMode || !state.inspectImageData || !elements.inspectOverlay.hasPointerCapture(event.pointerId)) return;
+  const stroke = state.inspectMaskStrokes[state.inspectMaskStrokes.length - 1];
+  if (!stroke) return;
+  const point = inspectPointerPosition(event);
+  const previous = stroke.points[stroke.points.length - 1];
+  if (Math.hypot(point.x - previous.x, point.y - previous.y) < Math.max(2, stroke.radius / 3)) return;
+  stroke.points.push(point);
+  drawInspectMask();
+}
+
+function onInspectPointerUp(event) {
+  if (elements.inspectOverlay.hasPointerCapture(event.pointerId)) elements.inspectOverlay.releasePointerCapture(event.pointerId);
+  const before = state.inspectHistoryBefore;
+  state.inspectHistoryBefore = null;
+  saveInspectMaskEdits();
+  commitHistory("Edit mask", before);
+}
+
+function navigateInspectSelection(direction) {
+  if (!state.inspectInstances.length) return;
+  const currentIndex = state.inspectInstances.findIndex((instance) => instance.annotation_id === state.inspectSelected?.annotation_id);
+  const nextIndex = (currentIndex + direction + state.inspectInstances.length) % state.inspectInstances.length;
+  const next = state.inspectInstances[nextIndex];
+  state.inspectPage = Math.floor(nextIndex / 500);
+  selectInspectInstance(next);
+  requestAnimationFrame(() => {
+    const selected = elements.inspectObjectList.querySelector(".inspect-object-row.active");
+    selected?.scrollIntoView({ block: "nearest" });
+    selected?.focus({ preventScroll: true });
+  });
+}
+
+async function selectInspectInstance(reference) {
+  state.inspectSelected = reference;
+  state.inspectMaskStrokes = (state.maskEdits[String(reference.annotation_id)] || []).map((stroke) => ({ ...stroke, points: stroke.points.map((point) => ({ ...point })) }));
+  state.inspectComponents = [];
+  state.inspectSelectedIslands = new Set();
+  state.inspectSplitMode = false;
+  updateInspectEditControls();
+  renderInspectObjectList();
+  elements.inspectLoading.hidden = false;
+  elements.inspectStage.hidden = true;
+  elements.inspectLoading.replaceChildren(element("div", "spinner"), element("strong", "", "Loading instance…"));
+  try {
+    let data = inspectImageCache.get(reference.image_id);
+    if (!data) {
+      const response = await request(`/api/image/${reference.image_id}`);
+      data = await response.json();
+      inspectImageCache.set(reference.image_id, data);
+    }
+    const annotation = data.annotations.find((item) => item.id === reference.annotation_id);
+    if (!annotation) throw new Error("Instance annotation was not found");
+    state.inspectImageData = { image: data.image, annotation };
+    elements.inspectLoading.hidden = true;
+    elements.inspectStage.hidden = false;
+    elements.inspectOverlay.width = elements.inspectImage.naturalWidth || data.image.width;
+    elements.inspectOverlay.height = elements.inspectImage.naturalHeight || data.image.height;
+    elements.inspectImage.onload = () => {
+      elements.inspectOverlay.width = elements.inspectImage.naturalWidth;
+      elements.inspectOverlay.height = elements.inspectImage.naturalHeight;
+      fitInspectStage();
+      drawInspectMask();
+    };
+    elements.inspectImage.src = `${data.image_url}?inspect=${reference.annotation_id}`;
+    elements.inspectSelection.replaceChildren(
+      element("span", "", `Instance #${reference.annotation_id}`),
+      element("strong", "", `${state.inspectIslandCount} islands · ${categoryName(annotation.category_id)}`),
+    );
+  } catch (error) {
+    elements.inspectLoading.replaceChildren(element("strong", "", "Could not load instance"), element("span", "", error.message));
+    showToast(error.message);
+  }
+}
+
+function fitInspectStage() {
+  if (!state.inspectImageData || elements.inspectStage.hidden) return;
+  const image = state.inspectImageData.image;
+  const bbox = state.inspectImageData.annotation.bbox;
+  const width = Math.max(100, elements.inspectStage.parentElement.clientWidth - 40);
+  const height = Math.max(100, elements.inspectStage.parentElement.clientHeight - 70);
+  const scale = Math.max(0.5, Math.min(4, Math.min((width - 70) / Math.max(bbox[2], 1), (height - 70) / Math.max(bbox[3], 1))));
+  const displayWidth = Math.round(image.width * scale);
+  const displayHeight = Math.round(image.height * scale);
+  const panX = displayWidth / 2 - (bbox[0] + bbox[2] / 2) * scale;
+  const panY = displayHeight / 2 - (bbox[1] + bbox[3] / 2) * scale;
+  elements.inspectStage.style.width = `${displayWidth}px`;
+  elements.inspectStage.style.height = `${displayHeight}px`;
+  elements.inspectStage.style.transform = `translate(-50%, -50%) translate(${panX}px, ${panY}px)`;
+  elements.inspectImage.style.width = `${displayWidth}px`;
+  elements.inspectImage.style.height = `${displayHeight}px`;
+  elements.inspectOverlay.style.width = `${displayWidth}px`;
+  elements.inspectOverlay.style.height = `${displayHeight}px`;
+  drawInspectMask();
+}
+
+function drawInspectMask() {
+  if (!state.inspectImageData || elements.inspectStage.hidden) return;
+  const image = state.inspectImageData.image;
+  const annotation = state.inspectImageData.annotation;
+  const canvas = elements.inspectOverlay;
+  const context = canvas.getContext("2d");
+  context.clearRect(0, 0, canvas.width, canvas.height);
+  state.inspectComponents = drawIslandOverlay(context, annotation.segmentation, image.width, image.height);
+  context.save();
+  for (const stroke of state.inspectMaskStrokes) {
+    context.globalCompositeOperation = stroke.operation === "remove" ? "destination-out" : "source-over";
+    context.fillStyle = "#facc15";
+    context.globalAlpha = stroke.operation === "remove" ? 1 : 0.4;
+    for (let index = 0; index < stroke.points.length; index += 1) {
+      const point = stroke.points[index];
+      if (index > 0) {
+        const previous = stroke.points[index - 1];
+        const distance = Math.hypot(point.x - previous.x, point.y - previous.y);
+        const steps = Math.max(1, Math.ceil(distance / Math.max(2, stroke.radius / 2)));
+        for (let step = 1; step <= steps; step += 1) {
+          const t = step / steps;
+          context.beginPath();
+          context.arc(previous.x + (point.x - previous.x) * t, previous.y + (point.y - previous.y) * t, stroke.radius, 0, Math.PI * 2);
+          context.fill();
+        }
+      } else {
+        context.beginPath();
+        context.arc(point.x, point.y, stroke.radius, 0, Math.PI * 2);
+        context.fill();
+      }
+    }
+  }
+  context.restore();
+  if (state.inspectSplitMode) {
+    context.save();
+    context.strokeStyle = "#ffffff";
+    context.lineWidth = 4;
+    for (const componentId of state.inspectSelectedIslands) {
+      const component = state.inspectComponents[componentId];
+      if (!component) continue;
+      for (const interval of component.intervals) {
+        context.strokeRect(interval.column, interval.start, 1, interval.end - interval.start);
+      }
+    }
+    context.restore();
+  }
+  const [x, y, width, height] = annotation.bbox;
+  context.strokeStyle = "#ffffff";
+  context.lineWidth = 3;
+  context.strokeRect(x, y, width, height);
+}
+
+function drawIslandOverlay(context, segmentation, imageWidth, imageHeight) {
+  if (!segmentation) return [];
+  const scale = Math.min(1, 1100 / imageWidth);
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(imageWidth * scale));
+  canvas.height = Math.max(1, Math.round(imageHeight * scale));
+  const maskContext = canvas.getContext("2d");
+  const palette = ["#f43f5e", "#22d3ee", "#a3e635", "#f59e0b", "#8b5cf6", "#ec4899", "#14b8a6", "#f97316", "#60a5fa", "#eab308", "#34d399", "#fb7185"];
+  let components = [];
+  if (Array.isArray(segmentation)) {
+    segmentation.forEach((polygon, index) => {
+      if (!Array.isArray(polygon) || polygon.length < 6) return;
+      maskContext.fillStyle = palette[index % palette.length];
+      maskContext.globalAlpha = 0.28;
+      maskContext.beginPath();
+      maskContext.moveTo(polygon[0] * scale, polygon[1] * scale);
+      for (let offset = 2; offset < polygon.length; offset += 2) maskContext.lineTo(polygon[offset] * scale, polygon[offset + 1] * scale);
+      maskContext.closePath();
+      maskContext.fill();
+      components.push({ id: index, polygon, intervals: [] });
+    });
+  } else {
+    const counts = typeof segmentation.counts === "string" ? decodeCompressedCounts(segmentation.counts) : segmentation.counts;
+    const height = segmentation.size?.[0] || imageHeight;
+    const width = segmentation.size?.[1] || imageWidth;
+    const columns = new Map();
+    let position = 0;
+    for (let runIndex = 0; runIndex < counts.length; runIndex += 1) {
+      const count = counts[runIndex];
+      if (runIndex % 2 === 0) {
+        position += count;
+        continue;
+      }
+      let remaining = count;
+      while (remaining > 0 && position < height * width) {
+        const column = Math.floor(position / height);
+        const row = position % height;
+        const length = Math.min(remaining, height - row);
+        if (!columns.has(column)) columns.set(column, []);
+        columns.get(column).push({ start: row, end: row + length });
+        position += length;
+        remaining -= length;
+      }
+      position += remaining;
+    }
+    const parent = [];
+    const find = (node) => {
+      while (parent[node] !== node) {
+        parent[node] = parent[parent[node]];
+        node = parent[node];
+      }
+      return node;
+    };
+    const union = (left, right) => {
+      left = find(left);
+      right = find(right);
+      if (left !== right) parent[right] = left;
+    };
+    const componentIntervals = [];
+    let previousColumn = null;
+    let previous = [];
+    for (const column of [...columns.keys()].sort((left, right) => left - right)) {
+      const current = [];
+      for (const interval of columns.get(column)) {
+        const node = parent.length;
+        parent.push(node);
+        if (previousColumn === column - 1) {
+          for (const previousInterval of previous) {
+            if (interval.start < previousInterval.end && interval.end > previousInterval.start) union(node, previousInterval.node);
+          }
+        }
+        current.push({ ...interval, node, column });
+      }
+      componentIntervals.push(...current);
+      previousColumn = column;
+      previous = current;
+    }
+    const componentMap = new Map();
+    for (const interval of componentIntervals) {
+      const root = find(interval.node);
+      if (!componentMap.has(root)) componentMap.set(root, []);
+      componentMap.get(root).push(interval);
+    }
+    components = [...componentMap.entries()].map(([root, intervals], id) => ({ id, root, intervals }));
+    maskContext.globalAlpha = 0.28;
+    for (const component of components) {
+      maskContext.fillStyle = palette[component.id % palette.length];
+      for (const interval of component.intervals) {
+        const x = Math.floor(interval.column * scale);
+        const y = Math.floor(interval.start * scale);
+        const width = Math.max(1, Math.ceil((interval.column + 1) * scale) - x);
+        const height = Math.max(1, Math.ceil(interval.end * scale) - y);
+        maskContext.fillRect(x, y, width, height);
+      }
+    }
+  }
+  context.drawImage(canvas, 0, 0, imageWidth, imageHeight);
+  return components;
 }
 
 async function loadDataset() {
@@ -165,6 +969,11 @@ function renderCategories() {
     option.textContent = category.name;
     option.selected = category.id === state.activeCategory;
     elements.activeCategory.append(option);
+    const splitOption = document.createElement("option");
+    splitOption.value = category.id;
+    splitOption.textContent = category.name;
+    splitOption.selected = category.id === state.inspectSplitCategory;
+    elements.inspectSplitCategory.append(splitOption);
   }
 }
 
@@ -707,14 +1516,14 @@ function onPointerDown(event) {
   const handle = state.showBoxes ? hitHandle(position) : -1;
   if (handle >= 0) {
     const annotation = getSelected();
-    state.drag = { type: "resize", handle, start: position, original: [...annotation.bbox] };
+    state.drag = { type: "resize", handle, start: position, original: [...annotation.bbox], historyBefore: captureHistoryState() };
   } else if (state.drawMode || event.shiftKey) {
-    state.drag = { type: "new", start: position, end: position, box: null };
+    state.drag = { type: "new", start: position, end: position, box: null, historyBefore: captureHistoryState() };
   } else {
     const annotation = hitAnnotation(position);
     state.selectedId = annotation?.id ?? null;
     if (annotation) {
-      state.drag = { type: "move", start: position, original: [...annotation.bbox] };
+      state.drag = { type: "move", start: position, original: [...annotation.bbox], historyBefore: captureHistoryState() };
       state.activeCategory = annotation.category_id;
       elements.activeCategory.value = String(annotation.category_id);
     }
@@ -782,6 +1591,7 @@ function onPointerMove(event) {
 function onPointerUp(event) {
   if (!state.drag) return;
   const wasPan = state.drag.type === "pan";
+  const historyBefore = state.drag.historyBefore;
   if (state.drag.type === "new" && state.drag.box && state.drag.box.width > 3 / state.scale && state.drag.box.height > 3 / state.scale) {
     const box = clipBox(state.drag.box);
     const annotation = {
@@ -800,7 +1610,10 @@ function onPointerUp(event) {
     state.current.category_counts[String(annotation.category_id)] = (state.current.category_counts[String(annotation.category_id)] || 0) + 1;
     persist();
     applyFilter();
+    commitHistory("Draw bounding box", historyBefore);
   }
+  if (state.drag.type === "move") commitHistory("Move bounding box", historyBefore);
+  if (state.drag.type === "resize") commitHistory("Resize bounding box", historyBefore);
   state.drag = null;
   if (elements.overlay.hasPointerCapture(event.pointerId)) elements.overlay.releasePointerCapture(event.pointerId);
   setPanMode(state.panMode);
@@ -823,10 +1636,12 @@ function setAnnotationBox(annotation, box) {
 function setReview(value) {
   const selected = getSelected();
   if (!selected) return;
+  const before = captureHistoryState();
   const key = String(selected.id);
   if (!value) delete state.reviews[key];
   else state.reviews[key] = value;
   persist();
+  commitHistory(value ? `Mark ${value}` : "Clear review", before);
   renderImageList();
   renderObjects();
   draw();
@@ -844,20 +1659,20 @@ function updateSelectionPosition() {
   elements.selectionPosition.textContent = index >= 0 ? `${index + 1} / ${state.filtered.length}` : "";
 }
 
-function downloadCurrent() {
+async function downloadCurrent() {
   if (!state.imageData) return;
-  const output = {
-    info: { ...state.dataset.info, description: "COCO 1.0 export with local reviews", export_date: new Date().toISOString() },
-    images: [state.imageData.image],
-    annotations: getAnnotations().map((annotation) => {
-      const effective = effectiveAnnotation(annotation);
-      const review = state.reviews[String(annotation.id)];
-      return review ? { ...effective, review } : effective;
-    }),
-    categories: state.dataset.categories,
-  };
-  downloadBlob(new Blob([JSON.stringify(output)], { type: "application/json" }), state.imageData.image.file_name.replace(/\.[^.]+$/, "-reviewed.json"));
-  showToast("Current image exported");
+  try {
+    const response = await request("/api/export", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reviews: state.reviews, edits: state.edits, mask_edits: state.maskEdits, created: state.created, image_ids: [state.imageData.image.id] }),
+    });
+    const blob = await response.blob();
+    downloadBlob(blob, state.imageData.image.file_name.replace(/\.[^.]+$/, "-reviewed.json"));
+    showToast("Current image exported");
+  } catch (error) {
+    showToast(error.message);
+  }
 }
 
 async function exportAll() {
@@ -867,7 +1682,7 @@ async function exportAll() {
     const response = await request("/api/export", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ reviews: state.reviews, edits: state.edits, created: state.created }),
+      body: JSON.stringify({ reviews: state.reviews, edits: state.edits, mask_edits: state.maskEdits, created: state.created }),
     });
     const blob = await response.blob();
     downloadBlob(blob, "instances-reviewed.json");
@@ -889,6 +1704,9 @@ function downloadBlob(blob, filename) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+elements.undo.addEventListener("click", undoHistory);
+elements.redo.addEventListener("click", redoHistory);
+elements.historySelect.addEventListener("change", (event) => restoreHistory(Number(event.target.value)));
 elements.search.addEventListener("input", (event) => {
   state.search = event.target.value.trim();
   applyFilter();
@@ -909,6 +1727,7 @@ elements.activeCategory.addEventListener("change", () => {
     state.activeCategory = Number(elements.activeCategory.value);
     return;
   }
+  const before = captureHistoryState();
   setAnnotationBox(selected, selected.bbox);
   const key = String(selected.id);
   state.edits[key] = { ...(state.edits[key] || {}), category_id: Number(elements.activeCategory.value) };
@@ -916,6 +1735,7 @@ elements.activeCategory.addEventListener("change", () => {
   state.current.category_counts[elements.activeCategory.value] = (state.current.category_counts[elements.activeCategory.value] || 0) + 1;
   state.activeCategory = Number(elements.activeCategory.value);
   persist();
+  commitHistory("Change category", before);
   renderImageList();
   renderObjects();
   draw();
@@ -966,6 +1786,51 @@ elements.markRemove.addEventListener("click", () => setReview("remove"));
 elements.clearReview.addEventListener("click", () => setReview(null));
 elements.exportCurrent.addEventListener("click", downloadCurrent);
 elements.exportAll.addEventListener("click", exportAll);
+elements.islandFrequencyTool.addEventListener("click", () => toolRegistry.islandFrequency.run());
+elements.inspectEditToggle.addEventListener("click", () => {
+  state.inspectEditMode = !state.inspectEditMode;
+  updateInspectEditControls();
+});
+elements.inspectMaskAdd.addEventListener("click", () => {
+  state.inspectEditOperation = "add";
+  updateInspectEditControls();
+});
+elements.inspectMaskRemove.addEventListener("click", () => {
+  state.inspectEditOperation = "remove";
+  updateInspectEditControls();
+});
+elements.inspectBrushSize.addEventListener("input", (event) => {
+  state.inspectBrushSize = Number(event.target.value);
+  elements.inspectBrushValue.textContent = `${state.inspectBrushSize} px`;
+});
+elements.inspectMaskReset.addEventListener("click", resetInspectMask);
+elements.inspectSplitToggle.addEventListener("click", () => {
+  state.inspectSplitMode = !state.inspectSplitMode;
+  state.inspectSelectedIslands = new Set();
+  updateInspectEditControls();
+  drawInspectMask();
+});
+elements.inspectSplitCategory.addEventListener("change", (event) => {
+  state.inspectSplitCategory = Number(event.target.value);
+});
+elements.inspectSplitApply.addEventListener("click", applySplitInstance);
+elements.inspectDeleteInstance.addEventListener("click", deleteInspectInstance);
+elements.inspectOverlay.addEventListener("pointerdown", onInspectPointerDown);
+elements.inspectOverlay.addEventListener("pointermove", onInspectPointerMove);
+elements.inspectOverlay.addEventListener("pointerup", onInspectPointerUp);
+elements.inspectOverlay.addEventListener("pointercancel", onInspectPointerUp);
+elements.closeInspectModal.addEventListener("click", () => {
+  elements.inspectModal.hidden = true;
+});
+elements.inspectModal.addEventListener("click", (event) => {
+  if (event.target === elements.inspectModal) elements.inspectModal.hidden = true;
+});
+elements.closeToolModal.addEventListener("click", () => {
+  elements.toolModal.hidden = true;
+});
+elements.toolModal.addEventListener("click", (event) => {
+  if (event.target === elements.toolModal) elements.toolModal.hidden = true;
+});
 elements.overlay.addEventListener("pointerdown", onPointerDown);
 elements.overlay.addEventListener("pointermove", onPointerMove);
 elements.overlay.addEventListener("pointerup", onPointerUp);
@@ -981,6 +1846,22 @@ document.addEventListener("keydown", (event) => {
     return;
   }
   const key = event.key.toLowerCase();
+  if ((event.ctrlKey || event.metaKey) && key === "z") {
+    event.preventDefault();
+    if (event.shiftKey) redoHistory();
+    else undoHistory();
+    return;
+  }
+  if ((event.ctrlKey || event.metaKey) && key === "y") {
+    event.preventDefault();
+    redoHistory();
+    return;
+  }
+  if (!elements.inspectModal.hidden && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
+    event.preventDefault();
+    navigateInspectSelection(event.key === "ArrowDown" ? 1 : -1);
+    return;
+  }
   if (event.key === "ArrowUp" || event.key === "ArrowDown") {
     event.preventDefault();
     navigateObjectSelection(event.key === "ArrowDown" ? 1 : -1);
@@ -1003,6 +1884,14 @@ document.addEventListener("keydown", (event) => {
   }
   if (key === "delete" || key === "backspace") setReview("remove");
   if (key === "escape") {
+    if (!elements.inspectModal.hidden) {
+      elements.inspectModal.hidden = true;
+      return;
+    }
+    if (!elements.toolModal.hidden) {
+      elements.toolModal.hidden = true;
+      return;
+    }
     state.selectedId = null;
     state.drag = null;
     renderObjects();
@@ -1023,4 +1912,5 @@ document.addEventListener("keyup", (event) => {
   setPanMode(state.panMode);
 });
 
+initializeHistory();
 loadDataset();

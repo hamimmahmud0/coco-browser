@@ -1,0 +1,16 @@
+tput civis; trap 'tput cnorm; clear; exit' INT TERM; while true; do \
+  clear; \
+  RAW_SECS=$(cut -d' ' -f1 /proc/uptime | cut -d. -f1); \
+  DAYS=$((RAW_SECS / 86400)); \
+  HOURS=$(( (RAW_SECS % 86400) / 3600 )); \
+  MINS=$(( (RAW_SECS % 3600) / 60 )); \
+  SECS=$(( RAW_SECS % 60 )); \
+  echo -e "\033[1;34m┌────────────────────────────────────────┐\033[0m"; \
+  echo -e "\033[1;34m│\033[1;37m   📊  LIVE SYSTEM STATUS DASHBOARD   \033[1;34m│\033[0m"; \
+  echo -e "\033[1;34m├────────────────────────────────────────┤\033[0m"; \
+  printf "\033[1;34m│\033[0m \033[1;32mUptime:\033[0m %dd %dh %dm %ds%*s\033[1;34m│\033[0m\n" "$DAYS" "$HOURS" "$MINS" "$SECS" $((28 - ${#DAYS} - ${#HOURS} - ${#MINS} - ${#SECS})) ""; \
+  printf "\033[1;34m│\033[0m \033[1;33mLoad:\033[0m   $(uptime | awk -F'load average:' '{print $2}')\033[1;34m│\033[0m\n"; \
+  echo -e "\033[1;34m└────────────────────────────────────────┘\033[0m"; \
+  echo -e "\033[0;37mPress [CTRL+C] to exit safely\033[0m"; \
+  sleep 1; \
+done

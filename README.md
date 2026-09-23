@@ -21,6 +21,9 @@ The default dataset is:
 - Supports drawing, moving, resizing, reviewing, and removing bounding boxes.
 - Stores edits in browser `localStorage` and exports valid COCO 1.0 JSON.
 - Uses only the Python standard library for the server.
+- Runs background dataset tools with live status-bar progress.
+- Includes the **Island Frequency** tool for connected-component analysis across all instances.
+- Includes snapshot-based undo/redo and a Photoshop-style history selector.
 
 ## Requirements
 
@@ -52,6 +55,7 @@ The server binds to `0.0.0.0:8888` by default, so it is also reachable from anot
 --port PORT          Port to bind
 --coco-url URL       Direct URL to a COCO instances JSON file
 --image-url TEMPLATE Image URL template containing {filename}
+--workers N         Island Frequency worker processes; 0 uses all available CPUs
 ```
 
 Show all options:
@@ -85,6 +89,7 @@ HOST=127.0.0.1 \
 PORT=9090 \
 COCO_URL="https://example.com/dataset/instances.json" \
 IMAGE_URL="https://example.com/images/{filename}" \
+WORKERS=0 \
 python server.py
 ```
 
@@ -110,6 +115,41 @@ Command-line arguments override environment defaults.
 | Mark for removal | `Delete` or `Backspace` |
 | Draw a bbox | Enable **Draw bbox**, hold `Shift`, or press `B`, then drag |
 | Deselect object | `Escape` |
+| Undo | `Ctrl/Cmd+Z` |
+| Redo | `Ctrl/Cmd+Shift+Z` or `Ctrl+Y` |
+
+## Island Frequency Tool
+
+Open **Tools** in the header and select **Island Frequency**.
+
+The tool analyzes every detection instance in the currently configured COCO dataset. For each instance it:
+
+1. Decodes the compressed COCO RLE mask.
+2. Splits column-major foreground runs into vertical intervals.
+3. Connects overlapping intervals in adjacent image columns.
+4. Counts the resulting connected components using 4-connectivity.
+
+While the job runs, the bottom status bar displays the tool name, percentage progress, and processed instance count. When complete, a popup shows:
+
+- Total detection instances
+- Total islands
+- Mean and median islands per instance
+- Mode and minimum/maximum range
+- Single-island and multi-island instance counts
+- A frequency distribution graph
+- Per-category island summaries
+
+The analysis runs in a background server thread and uses all CPUs available to the server process by default. Set `--workers N` to cap the number of worker processes, for example:
+
+```bash
+python server.py --workers 2
+```
+
+Each frequency row also has an **Inspect** action. Choose a value such as `N=2` to open a larger inspector popup over the report. The inspector contains a scrollable, paginated instance list; select an instance to focus its bounding box rather than showing the whole image, and render each connected mask island in a different color. Use Up/Down Arrow to move through the inspector list.
+
+The inspector's **Edit mask** mode supports add/erase brush strokes and a brush-size control. Mask strokes are stored in browser local storage and applied to the selected instance when exporting through the server.
+
+**Split instance** mode lets you click one or more colored mask islands, choose a replacement class, and create a new COCO instance from only those islands. The original instance is marked removed; the split is undoable and appears in exports.
 
 ## Editing Model
 
@@ -129,6 +169,8 @@ Command-line arguments override environment defaults.
 4. Export the current image or full dataset.
 
 New boxes contain no segmentation mask. Their COCO segmentation field is an empty list until a mask is added by an external process.
+
+Every review, bbox edit, new box, category change, and mask brush stroke creates a history snapshot. Use the header Undo/Redo buttons, the history selector, or the keyboard shortcuts to move through the edit timeline.
 
 ## Persistence and Export
 
@@ -166,6 +208,8 @@ The application has no authentication. Do not expose it publicly without placing
 | `GET` | `/api/image/{id}` | One image, its annotations, and media URL |
 | `GET` | `/api/media/{id}` | Streamed image proxy with range support |
 | `POST` | `/api/export` | Build a full edited COCO JSON export |
+| `POST` | `/api/tools/island-frequency/start` | Start an Island Frequency analysis job |
+| `GET` | `/api/tools/island-frequency/status?job_id={id}` | Poll Island Frequency progress and results |
 
 The complete COCO source is downloaded and indexed once on the first dataset request, then kept in server memory for the lifetime of the process.
 
