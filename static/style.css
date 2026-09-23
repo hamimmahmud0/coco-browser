@@ -1498,6 +1498,122 @@ select {
   background: linear-gradient(#a78bfa, #5b3df5);
 }
 
+.excess-island-modal {
+  z-index: 66;
+}
+
+.excess-island-card {
+  width: min(1100px, 96vw);
+  max-height: 92vh;
+  overflow-y: auto;
+}
+
+.excess-island-setup,
+.excess-island-results {
+  padding: 18px 20px 22px;
+}
+
+.excess-filter-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 11px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-2);
+  cursor: pointer;
+}
+
+.excess-filter-check + .excess-range-inputs {
+  margin: 8px 0 14px 28px;
+}
+
+.excess-filter-check input {
+  margin-top: 2px;
+  accent-color: var(--accent);
+}
+
+.excess-filter-check span,
+.excess-filter-check strong,
+.excess-filter-check small {
+  display: block;
+}
+
+.excess-filter-check strong {
+  font-size: 11px;
+}
+
+.excess-filter-check small {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.excess-range-inputs {
+  display: flex;
+  gap: 9px;
+}
+
+.excess-range-inputs label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.excess-range-inputs input {
+  width: 95px;
+  height: 29px;
+  padding: 0 7px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel-2);
+  color: var(--text);
+}
+
+.excess-run-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.excess-run-row > span {
+  flex: 1;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.excess-island-results {
+  overflow-x: auto;
+}
+
+.excess-island-row {
+  min-width: 760px;
+  display: grid;
+  grid-template-columns: 1fr 0.7fr 0.6fr 0.8fr 1.2fr 1.2fr;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+  font-size: 10px;
+}
+
+.excess-island-row.header {
+  color: var(--muted);
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.excess-island-row > * {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .toast {
   position: fixed;
   right: 18px;

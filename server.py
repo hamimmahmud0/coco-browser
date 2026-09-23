@@ -35,7 +35,10 @@ _jobs_lock = threading.Lock()
 _dataset = None
 _jobs = {}
 _shape_jobs = {}
+_cleanup_jobs = {}
 _shape_references = {}
+_job_cancel_events = {}
+_active_pools = {}
 
 
 def load_dataset():
@@ -438,6 +441,64 @@ def shape_values(annotation, descriptors, reference=None):
     return values
 
 
+def mask_component_areas(segmentation):
+    if not isinstance(segmentation, dict):
+        return []
+    counts = segmentation.get("counts", [])
+    if isinstance(counts, str):
+        counts = decode_compressed_counts(counts)
+    height, width = segmentation.get("size", [0, 0])
+    if not counts or not height or not width:
+        return []
+    columns = {}
+    position = 0
+    for run_index, count in enumerate(counts):
+        if run_index % 2 == 0:
+            position += count
+            continue
+        remaining = count
+        while remaining > 0 and position < height * width:
+            column, row = divmod(position, height)
+            length = min(remaining, height - row)
+            columns.setdefault(column, []).append((row, row + length))
+            position += length
+            remaining -= length
+        position += remaining
+    parent = []
+    component_intervals = []
+
+    def find(node):
+        while parent[node] != node:
+            parent[node] = parent[parent[node]]
+            node = parent[node]
+        return node
+
+    def union(left, right):
+        left, right = find(left), find(right)
+        if left != right:
+            parent[right] = left
+
+    previous_column = None
+    previous = []
+    for column in sorted(columns):
+        current = []
+        for start, end in columns[column]:
+            node = len(parent)
+            parent.append(node)
+            if previous_column == column - 1:
+                for previous_start, previous_end, previous_node in previous:
+                    if start < previous_end and end > previous_start:
+                        union(node, previous_node)
+            current.append((start, end, node))
+            component_intervals.append((start, end, node))
+        previous_column, previous = column, current
+    areas = {}
+    for start, end, node in component_intervals:
+        root = find(node)
+        areas[root] = areas.get(root, 0) + end - start
+    return list(areas.values())
+
+
 def apply_mask_strokes(segmentation, strokes):
     if not segmentation or not strokes:
         return segmentation
@@ -521,6 +582,8 @@ def build_island_summary(values, elapsed):
 
 def update_job(job_id, **values):
     with _jobs_lock:
+        if values.get("status") == "running" and _jobs[job_id].get("status") == "cancelling":
+            return
         _jobs[job_id].update(values)
 
 
@@ -572,29 +635,44 @@ def run_island_frequency(job_id, workers):
         chunk_target = worker_count * 4
         chunk_size = max(1, (total + chunk_target - 1) // chunk_target)
         bounds = [(start, min(start + chunk_size, total)) for start in range(0, total, chunk_size)]
+        cancel_event = _job_cancel_events.setdefault(job_id, threading.Event())
         update_job(job_id, status="running", total=total, processed=0, progress=0, workers=worker_count, available_cpus=available_cpu_count())
         overall = Counter()
         category_counters = {}
         instance_groups = {}
         processed = 0
         pool = get_context("fork").Pool(processes=worker_count)
+        _active_pools[job_id] = pool
         try:
-            for result in pool.imap_unordered(count_island_range, bounds):
-                merge_counters(overall, result["overall"])
-                for category, values in result["categories"].items():
-                    merge_counters(category_counters.setdefault(category, Counter()), values)
-                for island_count, instances in result["instances"].items():
-                    instance_groups.setdefault(int(island_count), []).extend(instances)
-                processed += result["processed"]
-                update_job(
-                    job_id,
-                    processed=processed,
-                    progress=round(processed * 100 / total, 3) if total else 100,
-                    elapsed_seconds=round(time.monotonic() - started, 3),
-                )
+            pending_jobs = [pool.apply_async(count_island_range, (bound,)) for bound in bounds]
+            while pending_jobs:
+                for pending in list(pending_jobs):
+                    if not pending.ready():
+                        continue
+                    result = pending.get()
+                    pending_jobs.remove(pending)
+                    merge_counters(overall, result["overall"])
+                    for category, values in result["categories"].items():
+                        merge_counters(category_counters.setdefault(category, Counter()), values)
+                    for island_count, instances in result["instances"].items():
+                        instance_groups.setdefault(int(island_count), []).extend(instances)
+                    processed += result["processed"]
+                    update_job(
+                        job_id,
+                        processed=processed,
+                        progress=round(processed * 100 / total, 3) if total else 100,
+                        elapsed_seconds=round(time.monotonic() - started, 3),
+                    )
+                if pending_jobs and cancel_event.wait(0.05):
+                    update_job(job_id, status="cancelled", elapsed_seconds=round(time.monotonic() - started, 3))
+                    return
         finally:
             pool.terminate()
             pool.join()
+            _active_pools.pop(job_id, None)
+        if cancel_event.is_set():
+            update_job(job_id, status="cancelled", elapsed_seconds=round(time.monotonic() - started, 3))
+            return
         overall_values = [value for value, count in overall.items() for _ in range(count)]
         categories = [
             {
@@ -624,7 +702,10 @@ def run_island_frequency(job_id, workers):
             },
         )
     except Exception as error:
-        update_job(job_id, status="error", error=str(error), elapsed_seconds=round(time.monotonic() - started, 3))
+        if _job_cancel_events.get(job_id) and _job_cancel_events[job_id].is_set():
+            update_job(job_id, status="cancelled", elapsed_seconds=round(time.monotonic() - started, 3))
+        else:
+            update_job(job_id, status="error", error=str(error), elapsed_seconds=round(time.monotonic() - started, 3))
 
 
 def start_island_frequency_job(workers=0):
@@ -640,6 +721,7 @@ def start_island_frequency_job(workers=0):
             )
             for job in completed[: len(_jobs) - 19]:
                 _jobs.pop(job["id"], None)
+        _job_cancel_events[job_id] = threading.Event()
         _jobs[job_id] = {
             "id": job_id,
             "status": "queued",
@@ -740,27 +822,41 @@ def run_shape_descriptors(job_id, descriptors, class_ids, workers):
                     cropped = cropped_mask(reference)
                     if cropped:
                         _shape_references[category_id] = cropped[0]
-        chunk_target = worker_count * 4
+        chunk_target = worker_count * 16
         chunk_size = max(1, (total + chunk_target - 1) // chunk_target)
         bounds = [selected_indices[start : start + chunk_size] for start in range(0, total, chunk_size)]
+        cancel_event = _job_cancel_events.setdefault(job_id, threading.Event())
         update_shape_job(job_id, status="running", total=total, processed=0, progress=0, workers=worker_count, available_cpus=available_cpu_count())
         merged = {}
         skipped = 0
         processed = 0
         pool = get_context("fork").Pool(processes=worker_count)
+        _active_pools[job_id] = pool
         try:
-            arguments = [(bound, descriptors, class_ids) for bound in bounds]
-            for result in pool.imap_unordered(shape_range, arguments):
-                processed += result["processed"]
-                skipped += result["skipped"]
-                for category_id, values in result["class_values"].items():
-                    target = merged.setdefault(category_id, {})
-                    for descriptor, descriptor_values in values.items():
-                        target.setdefault(descriptor, []).extend(descriptor_values)
-                update_shape_job(job_id, processed=processed, progress=round(processed * 100 / total, 3) if total else 100, elapsed_seconds=round(time.monotonic() - started, 3))
+            pending_jobs = [pool.apply_async(shape_range, ((bound, descriptors, class_ids),)) for bound in bounds]
+            while pending_jobs:
+                for pending in list(pending_jobs):
+                    if not pending.ready():
+                        continue
+                    result = pending.get()
+                    pending_jobs.remove(pending)
+                    processed += result["processed"]
+                    skipped += result["skipped"]
+                    for category_id, values in result["class_values"].items():
+                        target = merged.setdefault(category_id, {})
+                        for descriptor, descriptor_values in values.items():
+                            target.setdefault(descriptor, []).extend(descriptor_values)
+                    update_shape_job(job_id, processed=processed, progress=round(processed * 100 / total, 3) if total else 100, elapsed_seconds=round(time.monotonic() - started, 3))
+                if pending_jobs and cancel_event.wait(0.05):
+                    update_shape_job(job_id, status="cancelled", elapsed_seconds=round(time.monotonic() - started, 3))
+                    return
         finally:
             pool.terminate()
             pool.join()
+            _active_pools.pop(job_id, None)
+        if cancel_event.is_set():
+            update_shape_job(job_id, status="cancelled", elapsed_seconds=round(time.monotonic() - started, 3))
+            return
         categories = [
             {"id": category["id"], "name": category["name"], "summary": build_shape_summary({category["id"]: merged.get(str(category["id"]), {})}, time.monotonic() - started)}
             for category in data["categories"]
@@ -768,11 +864,16 @@ def run_shape_descriptors(job_id, descriptors, class_ids, workers):
         ]
         update_shape_job(job_id, status="completed", processed=total, progress=100, result={"descriptors": descriptors, "class_ids": class_ids, "categories": categories, "skipped": skipped, "processed": total, "workers": worker_count})
     except Exception:
-        update_shape_job(job_id, status="error", error=traceback.format_exc(), elapsed_seconds=round(time.monotonic() - started, 3))
+        if _job_cancel_events.get(job_id) and _job_cancel_events[job_id].is_set():
+            update_shape_job(job_id, status="cancelled", elapsed_seconds=round(time.monotonic() - started, 3))
+        else:
+            update_shape_job(job_id, status="error", error=traceback.format_exc(), elapsed_seconds=round(time.monotonic() - started, 3))
 
 
 def update_shape_job(job_id, **values):
     with _jobs_lock:
+        if values.get("status") == "running" and _shape_jobs[job_id].get("status") == "cancelling":
+            return
         _shape_jobs[job_id].update(values)
 
 
@@ -787,9 +888,115 @@ def start_shape_descriptor_job(payload):
             if job["status"] in {"queued", "running"}:
                 return job["id"]
         job_id = uuid.uuid4().hex
+        _job_cancel_events[job_id] = threading.Event()
         _shape_jobs[job_id] = {"id": job_id, "status": "queued", "processed": 0, "total": 0, "progress": 0, "workers": 0, "created_at": time.time(), "descriptors": descriptors, "class_ids": class_ids}
     threading.Thread(target=run_shape_descriptors, args=(job_id, descriptors, class_ids, WORKERS), daemon=True).start()
     return job_id
+
+
+def cancel_analysis_job(job_id):
+    with _jobs_lock:
+        job = _jobs.get(job_id) or _shape_jobs.get(job_id) or _cleanup_jobs.get(job_id)
+        if job is None or job["status"] not in {"queued", "running", "cancelling"}:
+            return False
+        job["status"] = "cancelling"
+        event = _job_cancel_events.get(job_id)
+        if event:
+            event.set()
+        return True
+
+
+def cleanup_range(arguments):
+    indices, filters = arguments
+    data = _dataset or load_dataset()
+    candidates = []
+    for index in indices:
+        annotation = data["annotations"][index]
+        areas = mask_component_areas(annotation.get("segmentation"))
+        island_count = len(areas)
+        if island_count < 2 or not filters["island_range"]:
+            if not (filters["island_range"] and filters["min_islands"] <= island_count <= filters["max_islands"]):
+                continue
+        if filters["island_range"] and not filters["min_islands"] <= island_count <= filters["max_islands"]:
+            continue
+        largest = max(areas)
+        if filters["area_ratio"]:
+            drop_indices = [offset for offset, area in enumerate(areas) if area / largest <= filters["max_area_ratio"]]
+            if not drop_indices:
+                continue
+        else:
+            drop_indices = []
+        candidates.append({"annotation_id": annotation["id"], "image_id": annotation["image_id"], "category_id": annotation.get("category_id"), "island_count": island_count, "component_areas": areas, "drop_indices": drop_indices})
+    return candidates, len(indices)
+
+
+def update_cleanup_job(job_id, **values):
+    with _jobs_lock:
+        _cleanup_jobs[job_id].update(values)
+
+
+def run_excess_island_job(job_id, filters):
+    started = time.monotonic()
+    try:
+        data = load_dataset()
+        indices = list(range(len(data["annotations"])))
+        total = len(indices)
+        cancel_event = _job_cancel_events.setdefault(job_id, threading.Event())
+        update_cleanup_job(job_id, status="running", total=total, processed=0, progress=0, workers=available_cpu_count(), available_cpus=available_cpu_count())
+        candidates = []
+        processed = 0
+        pool = get_context("fork").Pool(processes=available_cpu_count())
+        try:
+            pending_jobs = [pool.apply_async(cleanup_range, ((bound, filters),)) for bound in [indices[start : start + 250] for start in range(0, total, 250)]]
+            while pending_jobs:
+                for pending in list(pending_jobs):
+                    if not pending.ready():
+                        continue
+                    result, count = pending.get()
+                    candidates.extend(result)
+                    processed += count
+                    pending_jobs.remove(pending)
+                    update_cleanup_job(job_id, processed=processed, progress=round(processed * 100 / total, 3) if total else 100, elapsed_seconds=round(time.monotonic() - started, 3))
+                if pending_jobs and cancel_event.wait(0.05):
+                    update_cleanup_job(job_id, status="cancelled", elapsed_seconds=round(time.monotonic() - started, 3))
+                    return
+        finally:
+            pool.terminate()
+            pool.join()
+        update_cleanup_job(job_id, status="completed", processed=total, progress=100, result={"filters": filters, "candidates": sorted(candidates, key=lambda item: item["annotation_id"]), "elapsed_seconds": round(time.monotonic() - started, 3), "workers": available_cpu_count()})
+    except Exception as error:
+        update_cleanup_job(job_id, status="error", error=str(error), elapsed_seconds=round(time.monotonic() - started, 3))
+
+
+def start_excess_island_job(payload):
+    filters = {
+        "island_range": bool(payload.get("island_range", True)),
+        "min_islands": max(2, int(payload.get("min_islands", 2))),
+        "max_islands": max(2, int(payload.get("max_islands", 100000))),
+        "area_ratio": bool(payload.get("area_ratio", False)),
+        "max_area_ratio": float(payload.get("max_area_ratio", 0.25)),
+    }
+    if not filters["island_range"] and not filters["area_ratio"]:
+        raise ValueError("Enable island range or area ratio")
+    if filters["min_islands"] > filters["max_islands"]:
+        raise ValueError("Minimum island count cannot exceed maximum")
+    if not 0 < filters["max_area_ratio"] <= 1:
+        raise ValueError("Maximum area ratio must be between 0 and 1")
+    with _jobs_lock:
+        for job in _cleanup_jobs.values():
+            if job["status"] in {"queued", "running"}:
+                return job["id"]
+        job_id = uuid.uuid4().hex
+        _job_cancel_events[job_id] = threading.Event()
+        _cleanup_jobs[job_id] = {"id": job_id, "status": "queued", "processed": 0, "total": 0, "progress": 0, "created_at": time.time()}
+    threading.Thread(target=run_excess_island_job, args=(job_id, filters), daemon=True).start()
+    return job_id
+
+
+def get_excess_island_job(job_id):
+    with _jobs_lock:
+        job = _cleanup_jobs.get(job_id)
+        return dict(job) if job else None
 
 
 def get_shape_descriptor_job(job_id):
@@ -818,11 +1025,28 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/tools/island-frequency/start":
             self.send_json({"job_id": start_island_frequency_job(WORKERS)})
             return
+        if path == "/api/tools/excess-islands/start":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                payload = json.loads(self.rfile.read(length) or b"{}")
+                self.send_json({"job_id": start_excess_island_job(payload)})
+            except (ValueError, TypeError, json.JSONDecodeError) as error:
+                self.send_error(HTTPStatus.BAD_REQUEST, str(error))
+            return
         if path == "/api/tools/shape-descriptors/start":
             try:
                 length = int(self.headers.get("Content-Length", "0"))
                 payload = json.loads(self.rfile.read(length) or b"{}")
                 self.send_json({"job_id": start_shape_descriptor_job(payload)})
+            except (ValueError, TypeError, json.JSONDecodeError) as error:
+                self.send_error(HTTPStatus.BAD_REQUEST, str(error))
+            return
+        if path in {"/api/tools/island-frequency/cancel", "/api/tools/shape-descriptors/cancel", "/api/tools/excess-islands/cancel"}:
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                payload = json.loads(self.rfile.read(length) or b"{}")
+                cancelled = cancel_analysis_job(payload.get("job_id", ""))
+                self.send_json({"cancelled": cancelled})
             except (ValueError, TypeError, json.JSONDecodeError) as error:
                 self.send_error(HTTPStatus.BAD_REQUEST, str(error))
             return
@@ -915,6 +1139,14 @@ class Handler(BaseHTTPRequestHandler):
                     "category_colors": data["category_colors"],
                 }
                 self.send_json(body, send_body)
+                return
+            if path == "/api/tools/excess-islands/status":
+                job_id = parse_qs(parsed.query).get("job_id", [""])[0]
+                job = get_excess_island_job(job_id)
+                if job is None:
+                    self.send_error(HTTPStatus.NOT_FOUND, "Excess Island job not found")
+                    return
+                self.send_json(job, send_body)
                 return
             if path == "/api/tools/shape-descriptors/status":
                 job_id = parse_qs(parsed.query).get("job_id", [""])[0]

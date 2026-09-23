@@ -24,6 +24,8 @@ const state = {
   loadToken: 0,
   nextNewId: 1,
   activeToolJob: null,
+  activeShapeJob: null,
+  activeCleanupJob: null,
   shapeResult: null,
   inspectIslandCount: null,
   inspectInstances: [],
@@ -89,6 +91,7 @@ const elements = {
   toolProgressLabel: document.querySelector("#tool-progress-label"),
   toolProgressBar: document.querySelector("#tool-progress-bar"),
   toolProgressCount: document.querySelector("#tool-progress-count"),
+  stopToolTask: document.querySelector("#stop-tool-task"),
   toolModal: document.querySelector("#tool-modal"),
   closeToolModal: document.querySelector("#close-tool-modal"),
   islandSummary: document.querySelector("#island-summary"),
@@ -118,6 +121,24 @@ const elements = {
   inspectDeleteInstance: document.querySelector("#inspect-delete-instance"),
   inspectEditStatus: document.querySelector("#inspect-edit-status"),
   shapeDescriptorTool: document.querySelector("#shape-descriptor-tool"),
+  excessIslandTool: document.querySelector("#excess-island-tool"),
+  excessIslandModal: document.querySelector("#excess-island-modal"),
+  closeExcessIslandModal: document.querySelector("#close-excess-island-modal"),
+  excessIslandSetup: document.querySelector("#excess-island-setup"),
+  excessIslandResults: document.querySelector("#excess-island-results"),
+  excessRangeEnabled: document.querySelector("#excess-island-range-enabled"),
+  excessMinIslands: document.querySelector("#excess-min-islands"),
+  excessMaxIslands: document.querySelector("#excess-max-islands"),
+  excessAreaRatioEnabled: document.querySelector("#excess-area-ratio-enabled"),
+  excessMaxAreaRatio: document.querySelector("#excess-max-area-ratio"),
+  excessIslandSelection: document.querySelector("#excess-island-selection"),
+  runExcessIslands: document.querySelector("#run-excess-islands"),
+  excessIslandStop: document.querySelector("#excess-island-stop"),
+  excessIslandProgress: document.querySelector("#excess-island-progress"),
+  excessIslandProgressBar: document.querySelector("#excess-island-progress-bar"),
+  excessIslandProgressCount: document.querySelector("#excess-island-progress-count"),
+  excessIslandSummary: document.querySelector("#excess-island-summary"),
+  excessIslandTable: document.querySelector("#excess-island-table"),
   shapeModal: document.querySelector("#shape-modal"),
   closeShapeModal: document.querySelector("#close-shape-modal"),
   shapeSetup: document.querySelector("#shape-setup"),
@@ -133,6 +154,7 @@ const elements = {
   shapeRunProgressBar: document.querySelector("#shape-run-progress-bar"),
   shapeRunProgressCount: document.querySelector("#shape-run-progress-count"),
   runShapeDescriptors: document.querySelector("#run-shape-descriptors"),
+  shapeStopTask: document.querySelector("#shape-stop-task"),
   shapeResultSummary: document.querySelector("#shape-result-summary"),
   shapeDetailClass: document.querySelector("#shape-detail-class"),
   shapeDetailDescriptor: document.querySelector("#shape-detail-descriptor"),
@@ -149,6 +171,10 @@ const toolRegistry = {
   shapeDescriptors: {
     label: "Shape Descriptor Lab",
     run: openShapeDescriptorLab,
+  },
+  excessIslands: {
+    label: "Excess Island Filter",
+    run: openExcessIslandFilter,
   },
 };
 
@@ -336,6 +362,7 @@ async function runIslandFrequency() {
     const response = await request("/api/tools/island-frequency/start", { method: "POST" });
     const { job_id: jobId } = await response.json();
     state.activeToolJob = jobId;
+    elements.stopToolTask.disabled = false;
     while (state.activeToolJob === jobId) {
       const statusResponse = await request(`/api/tools/island-frequency/status?job_id=${encodeURIComponent(jobId)}`);
       const job = await statusResponse.json();
@@ -346,6 +373,11 @@ async function runIslandFrequency() {
         showToast("Island Frequency analysis complete");
         break;
       }
+      if (job.status === "cancelled") {
+        elements.toolProgress.hidden = true;
+        showToast("Island Frequency task stopped");
+        break;
+      }
       if (job.status === "error") throw new Error(job.error || "Island Frequency analysis failed");
       await wait(600);
     }
@@ -354,6 +386,7 @@ async function runIslandFrequency() {
     showToast(error.message);
   } finally {
     state.activeToolJob = null;
+    elements.stopToolTask.disabled = true;
   }
 }
 
@@ -375,10 +408,114 @@ function openShapeDescriptorLab() {
   renderShapeSetup();
   state.shapeResult = null;
   elements.shapeRunProgress.hidden = true;
+  elements.shapeStopTask.hidden = true;
+  elements.shapeStopTask.disabled = true;
   elements.shapeSetup.hidden = false;
   elements.shapeResults.hidden = true;
   elements.shapeModal.hidden = false;
   document.querySelector(".tools-menu")?.removeAttribute("open");
+}
+
+function openExcessIslandFilter() {
+  elements.excessIslandSetup.hidden = false;
+  elements.excessIslandResults.hidden = true;
+  elements.excessIslandProgress.hidden = true;
+  elements.excessIslandStop.hidden = true;
+  elements.excessIslandModal.hidden = false;
+  updateExcessIslandSelection();
+  document.querySelector(".tools-menu")?.removeAttribute("open");
+}
+
+function updateExcessIslandSelection() {
+  const filters = [];
+  if (elements.excessRangeEnabled.checked) filters.push("island range");
+  if (elements.excessAreaRatioEnabled.checked) filters.push("area ratio");
+  elements.excessIslandSelection.textContent = filters.length ? `${filters.join(" + ")} enabled` : "Enable at least one filter";
+  elements.runExcessIslands.disabled = !filters.length;
+}
+
+async function runExcessIslandFilter() {
+  if (state.activeCleanupJob) return;
+  const filters = {
+    island_range: elements.excessRangeEnabled.checked,
+    min_islands: Number(elements.excessMinIslands.value),
+    max_islands: Number(elements.excessMaxIslands.value),
+    area_ratio: elements.excessAreaRatioEnabled.checked,
+    max_area_ratio: Number(elements.excessMaxAreaRatio.value),
+  };
+  if (!filters.island_range && !filters.area_ratio) return;
+  elements.runExcessIslands.disabled = true;
+  elements.excessIslandProgress.hidden = false;
+  elements.excessIslandStop.hidden = false;
+  try {
+    const response = await request("/api/tools/excess-islands/start", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(filters) });
+    const { job_id: jobId } = await response.json();
+    state.activeCleanupJob = jobId;
+    elements.stopToolTask.disabled = false;
+    while (true) {
+      const statusResponse = await request(`/api/tools/excess-islands/status?job_id=${encodeURIComponent(jobId)}`);
+      const job = await statusResponse.json();
+      elements.excessIslandProgressBar.value = job.progress || 0;
+      elements.excessIslandProgressCount.textContent = `${formatNumber(job.processed || 0)} / ${formatNumber(job.total || 0)}`;
+      elements.toolProgressBar.value = job.progress || 0;
+      elements.toolProgressCount.textContent = `${formatNumber(job.processed || 0)} / ${formatNumber(job.total || 0)}`;
+      if (job.status === "completed") {
+        renderExcessIslandResults(job.result);
+        elements.excessIslandSetup.hidden = true;
+        elements.excessIslandResults.hidden = false;
+        elements.excessIslandProgress.hidden = true;
+        elements.excessIslandStop.hidden = true;
+        showToast("Excess island analysis complete");
+        break;
+      }
+      if (job.status === "cancelled") {
+        elements.excessIslandProgress.hidden = true;
+        elements.excessIslandStop.hidden = true;
+        showToast("Excess Island Filter stopped");
+        break;
+      }
+      if (job.status === "error") throw new Error(job.error || "Excess Island analysis failed");
+      await wait(600);
+    }
+  } catch (error) {
+    elements.excessIslandProgress.hidden = true;
+    elements.excessIslandStop.hidden = true;
+    showToast(error.message);
+  } finally {
+    state.activeCleanupJob = null;
+    elements.stopToolTask.disabled = true;
+    updateExcessIslandSelection();
+  }
+}
+
+function renderExcessIslandResults(result) {
+  elements.excessIslandSummary.replaceChildren();
+  for (const [label, value] of [["Candidates", result.candidates.length], ["Instances scanned", result.processed], [["Island range", `${result.filters.min_islands}–${result.filters.max_islands}`], ["Area ratio", result.filters.area_ratio ? `≤ ${result.filters.max_area_ratio}` : "Off"]]]) {
+    const chip = element("div", "shape-result-chip");
+    chip.append(element("strong", "", String(value)), document.createTextNode(` ${label}`));
+    elements.excessIslandSummary.append(chip);
+  }
+  elements.excessIslandTable.replaceChildren();
+  const header = element("div", "excess-island-row header");
+  header.append(element("span", "", "Annotation"), element("span", "", "Image"), element("span", "", "Class"), element("span", "", "Islands"), element("span", "", "Smallest / largest"), element("span", "", "Drop candidates"));
+  elements.excessIslandTable.append(header);
+  for (const candidate of result.candidates.slice(0, 5000)) {
+    const row = element("div", "excess-island-row");
+    const smallest = Math.min(...candidate.component_areas);
+    const largest = Math.max(...candidate.component_areas);
+    row.append(element("span", "", `#${candidate.annotation_id}`), element("span", "", candidate.image_id), element("span", "", categoryName(candidate.category_id)), element("span", "", candidate.island_count), element("span", "", `${formatNumber(smallest)} / ${formatNumber(largest)}`), element("span", "", candidate.drop_indices.length ? `${candidate.drop_indices.length} island${candidate.drop_indices.length === 1 ? "" : "s"}` : "Range only"));
+    elements.excessIslandTable.append(row);
+  }
+  if (result.candidates.length > 5000) elements.excessIslandTable.append(element("div", "object-empty", `Showing first 5,000 of ${formatNumber(result.candidates.length)} candidates`));
+}
+
+function closeExcessIslandFilter() {
+  if (!elements.excessIslandResults.hidden) {
+    elements.excessIslandResults.hidden = true;
+    elements.excessIslandSetup.hidden = false;
+    return;
+  }
+  elements.excessIslandModal.hidden = true;
 }
 
 function closeShapeModal() {
@@ -446,9 +583,13 @@ async function runShapeDescriptorLab() {
   elements.shapeRunProgress.hidden = false;
   elements.shapeRunProgressBar.value = 0;
   elements.shapeRunProgressCount.textContent = "Starting…";
+  elements.shapeStopTask.hidden = false;
+  elements.shapeStopTask.disabled = false;
   try {
     const response = await request("/api/tools/shape-descriptors/start", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ descriptors, class_ids: classIds }) });
     const { job_id: jobId } = await response.json();
+    state.activeShapeJob = jobId;
+    elements.stopToolTask.disabled = false;
     elements.toolProgressLabel.textContent = `Shape Descriptor Lab · ${descriptors.length} selected`;
     elements.toolProgressBar.value = 0;
     elements.toolProgress.hidden = false;
@@ -464,7 +605,15 @@ async function runShapeDescriptorLab() {
         elements.shapeSetup.hidden = true;
         elements.shapeResults.hidden = false;
         elements.toolProgress.hidden = true;
+        elements.shapeStopTask.hidden = true;
+        elements.shapeStopTask.disabled = true;
         showToast("Shape descriptor analysis complete");
+        break;
+      }
+      if (job.status === "cancelled") {
+        elements.toolProgress.hidden = true;
+        elements.shapeRunProgress.hidden = true;
+        showToast("Shape Descriptor Lab task stopped");
         break;
       }
       if (job.status === "error") throw new Error(job.error || "Shape descriptor analysis failed");
@@ -473,8 +622,12 @@ async function runShapeDescriptorLab() {
   } catch (error) {
     elements.toolProgress.hidden = true;
     elements.shapeRunProgress.hidden = true;
+    elements.shapeStopTask.hidden = true;
+    elements.shapeStopTask.disabled = true;
     showToast(error.message);
   } finally {
+    state.activeShapeJob = null;
+    elements.stopToolTask.disabled = true;
     updateShapeSelectionSummary();
   }
 }
@@ -585,6 +738,22 @@ function drawShapeDetailGraph() {
   chart.fillStyle = "#cbd3df";
   chart.textAlign = "center";
   chart.fillText(`${category.name} · ${descriptor.label}`, margin.left + plotWidth / 2, height - 12);
+}
+
+async function stopActiveTask() {
+  const jobId = state.activeCleanupJob || state.activeShapeJob || state.activeToolJob;
+  if (!jobId) return;
+  const endpoint = state.activeCleanupJob ? "/api/tools/excess-islands/cancel" : state.activeShapeJob ? "/api/tools/shape-descriptors/cancel" : "/api/tools/island-frequency/cancel";
+  elements.stopToolTask.disabled = true;
+  elements.shapeStopTask.disabled = true;
+  try {
+    await request(endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ job_id: jobId }) });
+    showToast("Stop requested");
+  } catch (error) {
+    elements.stopToolTask.disabled = false;
+    elements.shapeStopTask.disabled = false;
+    showToast(error.message);
+  }
 }
 
 function renderIslandResults(result) {
@@ -1969,6 +2138,8 @@ function downloadBlob(blob, filename) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+elements.stopToolTask.addEventListener("click", stopActiveTask);
+elements.shapeStopTask.addEventListener("click", stopActiveTask);
 elements.undo.addEventListener("click", undoHistory);
 elements.redo.addEventListener("click", redoHistory);
 elements.historySelect.addEventListener("change", (event) => restoreHistory(Number(event.target.value)));
@@ -2053,6 +2224,15 @@ elements.exportCurrent.addEventListener("click", downloadCurrent);
 elements.exportAll.addEventListener("click", exportAll);
 elements.islandFrequencyTool.addEventListener("click", () => toolRegistry.islandFrequency.run());
 elements.shapeDescriptorTool.addEventListener("click", () => toolRegistry.shapeDescriptors.run());
+elements.excessIslandTool.addEventListener("click", () => toolRegistry.excessIslands.run());
+elements.closeExcessIslandModal.addEventListener("click", closeExcessIslandFilter);
+elements.excessIslandModal.addEventListener("click", (event) => {
+  if (event.target === elements.excessIslandModal) closeExcessIslandFilter();
+});
+elements.excessRangeEnabled.addEventListener("change", updateExcessIslandSelection);
+elements.excessAreaRatioEnabled.addEventListener("change", updateExcessIslandSelection);
+elements.runExcessIslands.addEventListener("click", runExcessIslandFilter);
+elements.excessIslandStop.addEventListener("click", stopActiveTask);
 elements.closeShapeModal.addEventListener("click", closeShapeModal);
 elements.shapeModal.addEventListener("click", (event) => {
   if (event.target === elements.shapeModal) closeShapeModal();
@@ -2173,6 +2353,10 @@ document.addEventListener("keydown", (event) => {
   }
   if (key === "delete" || key === "backspace") setReview("remove");
   if (key === "escape") {
+    if (!elements.excessIslandModal.hidden) {
+      closeExcessIslandFilter();
+      return;
+    }
     if (!elements.shapeModal.hidden) {
       closeShapeModal();
       return;

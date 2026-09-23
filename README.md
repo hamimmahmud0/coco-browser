@@ -117,6 +117,7 @@ Command-line arguments override environment defaults.
 | Deselect object | `Escape` |
 | Undo | `Ctrl/Cmd+Z` |
 | Redo | `Ctrl/Cmd+Shift+Z` or `Ctrl+Y` |
+| Stop active analysis | **Stop** in the status bar |
 
 ## Island Frequency Tool
 
@@ -170,6 +171,17 @@ Available descriptors:
 - Chamfer distance
 
 The first nine descriptors are calculated from the instance mask. Hausdorff and Chamfer compare each mask against the first valid instance in its selected class as a reference. Results are grouped by class and include count, mean, standard deviation, min, P05, median, P95, max, and a histogram for every selected descriptor group.
+
+## Excess Island Filter
+
+Open **Tools → Excess Island Filter**. Enable at least one filter:
+
+- Island count range
+- Maximum island area ratio relative to the largest island
+
+The tool scans all instances, reports multi-island candidates, and shows candidate island counts, component areas, and the number of islands matching the drop threshold. It is a detection/report tool and does not silently modify masks.
+
+
 
 ## Editing Model
 

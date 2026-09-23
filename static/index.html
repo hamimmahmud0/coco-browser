@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
   <title>COCO 1.0 Annotation Browser</title>
-  <link rel="stylesheet" href="/style.css?v=29">
+  <link rel="stylesheet" href="/style.css?v=32">
 </head>
 <body>
   <header class="topbar">
@@ -27,6 +27,10 @@
           <button id="shape-descriptor-tool" class="tool-menu-item" type="button">
             <strong>Shape Descriptor Lab</strong>
             <span>Compute selected mask shape descriptors by class</span>
+          </button>
+          <button id="excess-island-tool" class="tool-menu-item" type="button">
+            <strong>Excess Island Filter</strong>
+            <span>Find multi-island instances with excess regions</span>
           </button>
         </div>
       </details>
@@ -127,6 +131,7 @@
           <strong id="tool-progress-label">Island Frequency</strong>
           <progress id="tool-progress-bar" max="100" value="0"></progress>
           <span id="tool-progress-count">0 / 0</span>
+          <button id="stop-tool-task" class="button danger" type="button" disabled>Stop</button>
         </div>
         <div id="object-status"></div>
       </footer>
@@ -235,6 +240,7 @@
             <span id="shape-run-progress-count">0 / 0</span>
           </div>
           <button id="run-shape-descriptors" class="button primary" type="button" disabled>Run selected descriptors</button>
+          <button id="shape-stop-task" class="button danger" type="button" hidden disabled>Stop task</button>
         </div>
       </div>
       <div id="shape-results" class="shape-results" hidden>
@@ -252,7 +258,31 @@
     </div>
   </div>
 
+  <div id="excess-island-modal" class="modal excess-island-modal" role="dialog" aria-modal="true" aria-labelledby="excess-island-title" hidden>
+    <div class="modal-card excess-island-card">
+      <div class="modal-header">
+        <div>
+          <h2 id="excess-island-title">Excess Island Filter</h2>
+          <p>Find multi-island instances with regions that may be excess noise</p>
+        </div>
+        <button id="close-excess-island-modal" class="icon-button" type="button" title="Close">×</button>
+      </div>
+      <div id="excess-island-setup" class="excess-island-setup">
+        <label class="excess-filter-check"><input id="excess-island-range-enabled" type="checkbox" checked><span><strong>Island count range</strong><small>Filter instances by total number of mask islands</small></span></label>
+        <div class="excess-range-inputs"><label>Minimum <input id="excess-min-islands" type="number" min="2" value="2"></label><label>Maximum <input id="excess-max-islands" type="number" min="2" value="100000"></label></div>
+        <label class="excess-filter-check"><input id="excess-area-ratio-enabled" type="checkbox"><span><strong>Maximum area ratio</strong><small>Flag islands at or below this ratio of the largest island</small></span></label>
+        <div class="excess-range-inputs"><label>Maximum ratio <input id="excess-max-area-ratio" type="number" min="0.01" max="1" step="0.01" value="0.25"></label></div>
+        <div class="excess-run-row"><span id="excess-island-selection">Island range enabled</span><button id="run-excess-islands" class="button primary" type="button">Find excess islands</button><button id="excess-island-stop" class="button danger" type="button" hidden>Stop</button></div>
+        <div id="excess-island-progress" class="shape-run-progress" hidden><progress id="excess-island-progress-bar" max="100" value="0"></progress><span id="excess-island-progress-count">0 / 0</span></div>
+      </div>
+      <div id="excess-island-results" class="excess-island-results" hidden>
+        <div id="excess-island-summary" class="shape-result-summary"></div>
+        <div id="excess-island-table"></div>
+      </div>
+    </div>
+  </div>
+
   <div id="toast" class="toast" role="status"></div>
-  <script src="/app.js?v=29"></script>
+  <script src="/app.js?v=32"></script>
 </body>
 </html>
