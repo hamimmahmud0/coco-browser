@@ -479,6 +479,17 @@ async function runShapeDescriptorLab() {
   }
 }
 
+function shapeTableCell(value, textAlign = "right") {
+  const input = document.createElement("input");
+  input.className = "shape-table-cell";
+  input.type = "text";
+  input.readOnly = true;
+  input.value = String(value);
+  input.title = String(value);
+  input.style.textAlign = textAlign;
+  return input;
+}
+
 function renderShapeResults(result) {
   state.shapeResult = result;
   elements.shapeDetailClass.replaceChildren();
@@ -503,19 +514,11 @@ function renderShapeResults(result) {
     heading.append(element("strong", "", category.name), element("span", "", `${category.summary.descriptors ? Object.keys(category.summary.descriptors).length : 0} descriptor groups`));
     card.append(heading);
     const header = element("div", "shape-descriptor-row header");
-    header.append(element("span", "", "Descriptor"), element("span", "", "Mean"), element("span", "", "Std"), element("span", "", "Min"), element("span", "", "P05"), element("span", "", "Median"), element("span", "", "P95"), element("span", "", "Max"), element("span", "", "Distribution"));
+    header.append(element("span", "", "Descriptor"), element("span", "", "Mean"), element("span", "", "Std"), element("span", "", "Min"), element("span", "", "P05"), element("span", "", "Median"), element("span", "", "P95"), element("span", "", "Max"));
     card.append(header);
     for (const descriptor of Object.values(category.summary.descriptors)) {
       const row = element("div", "shape-descriptor-row");
-      const histogram = element("div", "shape-histogram");
-      const maximum = Math.max(1, ...descriptor.histogram.map((bin) => bin[2]));
-      for (const bin of descriptor.histogram) {
-        const bar = document.createElement("i");
-        bar.style.height = `${Math.max(8, bin[2] / maximum * 100)}%`;
-        bar.title = `${formatNumber(bin[0])}–${formatNumber(bin[1])}: ${formatNumber(bin[2])}`;
-        histogram.append(bar);
-      }
-      row.append(element("span", "", descriptor.label), element("span", "", formatNumber(descriptor.mean)), element("span", "", formatNumber(descriptor.std)), element("span", "", formatNumber(descriptor.min)), element("span", "", formatNumber(descriptor.p05)), element("span", "", formatNumber(descriptor.median)), element("span", "", formatNumber(descriptor.p95)), element("span", "", formatNumber(descriptor.max)), histogram);
+      row.append(shapeTableCell(descriptor.label, "left"), shapeTableCell(formatNumber(descriptor.mean)), shapeTableCell(formatNumber(descriptor.std)), shapeTableCell(formatNumber(descriptor.min)), shapeTableCell(formatNumber(descriptor.p05)), shapeTableCell(formatNumber(descriptor.median)), shapeTableCell(formatNumber(descriptor.p95)), shapeTableCell(formatNumber(descriptor.max)));
       card.append(row);
     }
     elements.shapeClassResults.append(card);

@@ -1428,12 +1428,43 @@ select {
 
 .shape-descriptor-row {
   display: grid;
-  grid-template-columns: 1.3fr repeat(7, 0.62fr) 1.4fr;
+  grid-template-columns: minmax(160px, 1.3fr) repeat(7, minmax(58px, 0.62fr));
   gap: 7px;
   padding: 8px 12px;
   border-bottom: 1px solid rgba(40, 48, 61, 0.7);
   color: #c7cfdb;
   font-size: 10px;
+}
+
+.shape-descriptor-row > * {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shape-table-cell {
+  width: 100%;
+  min-width: 0;
+  height: 25px;
+  padding: 3px 5px;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  outline: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-overflow: ellipsis;
+}
+
+.shape-table-cell:hover,
+.shape-table-cell:focus {
+  border-color: var(--accent);
+  background: rgba(124, 92, 255, 0.08);
+}
+
+.shape-table-cell:focus {
+  box-shadow: 0 0 0 2px rgba(124, 92, 255, 0.12);
 }
 
 .shape-descriptor-row:last-child {
