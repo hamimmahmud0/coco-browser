@@ -1,0 +1,176 @@
+COCO browser listening on http://0.0.0.0:8888
+127.0.0.1 - "GET /api/health HTTP/1.1" 200 -
+127.0.0.1 - "HEAD / HTTP/1.1" 200 -
+127.0.0.1 - "GET /api/dataset HTTP/1.1" 200 -
+127.0.0.1 - "GET /api/image/1 HTTP/1.1" 200 -
+127.0.0.1 - "POST /api/export HTTP/1.1" 200 -
+127.0.0.1 - "GET / HTTP/1.1" 200 -
+127.0.0.1 - "GET /style.css HTTP/1.1" 200 -
+127.0.0.1 - "GET /app.js HTTP/1.1" 200 -
+127.0.0.1 - "GET /api/dataset HTTP/1.1" 200 -
+127.0.0.1 - "GET /api/image/1 HTTP/1.1" 200 -
+127.0.0.1 - "GET /api/image/2 HTTP/1.1" 200 -
+127.0.0.1 - "GET /style.css HTTP/1.1" 200 -
+127.0.0.1 - "GET /api/image/2 HTTP/1.1" 200 -
+127.0.0.1 - "GET / HTTP/1.1" 200 -
+127.0.0.1 - "GET /api/image/2 HTTP/1.1" 200 -
+127.0.0.1 - "GET /api/dataset HTTP/1.1" 200 -
+127.0.0.1 - "GET /api/image/227 HTTP/1.1" 200 -
+COCO browser listening on http://0.0.0.0:8888
+127.0.0.1 - "GET /api/image/2 HTTP/1.1" 200 -
+127.0.0.1 - "GET /api/media/2 HTTP/1.1" 206 -
+127.0.0.1 - "GET /api/media/2 HTTP/1.1" 200 -
+127.0.0.1 - "GET /app.js HTTP/1.1" 200 -
+127.0.0.1 - "GET / HTTP/1.1" 200 -
+127.0.0.1 - "GET /style.css HTTP/1.1" 200 -
+127.0.0.1 - "GET /app.js HTTP/1.1" 200 -
+127.0.0.1 - "GET /api/dataset HTTP/1.1" 200 -
+127.0.0.1 - code 404, message Not Found
+127.0.0.1 - "GET /favicon.ico HTTP/1.1" 404 -
+127.0.0.1 - "GET /api/image/227 HTTP/1.1" 200 -
+127.0.0.1 - "GET /api/media/227?attempt=1 HTTP/1.1" 200 -
+127.0.0.1 - "GET / HTTP/1.1" 200 -
+127.0.0.1 - "GET /style.css HTTP/1.1" 200 -
+127.0.0.1 - "GET /app.js HTTP/1.1" 200 -
+127.0.0.1 - "GET /api/dataset HTTP/1.1" 200 -
+127.0.0.1 - code 404, message Not Found
+127.0.0.1 - "GET /favicon.ico HTTP/1.1" 404 -
+127.0.0.1 - "GET /api/image/227 HTTP/1.1" 200 -
+127.0.0.1 - "GET /api/image/320 HTTP/1.1" 200 -
+127.0.0.1 - "GET /api/media/320?attempt=1 HTTP/1.1" 200 -
+127.0.0.1 - "GET /api/media/2 HTTP/1.1" 200 -
+127.0.0.1 - "HEAD /api/media/2 HTTP/1.1" 200 -
+127.0.0.1 - "GET /api/media/2 HTTP/1.1" 200 -
+----------------------------------------
+Exception occurred during processing of request from ('127.0.0.1', 44656)
+Traceback (most recent call last):
+  File "/usr/lib/python3.12/socketserver.py", line 697, in process_request_thread
+    self.finish_request(request, client_address)
+  File "/usr/lib/python3.12/socketserver.py", line 362, in finish_request
+    self.RequestHandlerClass(request, client_address, self)
+  File "/usr/lib/python3.12/socketserver.py", line 766, in __init__
+    self.handle()
+  File "/usr/lib/python3.12/http/server.py", line 440, in handle
+    self.handle_one_request()
+  File "/usr/lib/python3.12/http/server.py", line 428, in handle_one_request
+    method()
+  File "/root/work/coco-browser/server.py", line 84, in do_GET
+    self.handle_request(send_body=True)
+  File "/root/work/coco-browser/server.py", line 150, in handle_request
+    self.proxy_image(image_id, send_body)
+  File "/root/work/coco-browser/server.py", line 198, in proxy_image
+    self.wfile.write(chunk)
+  File "/usr/lib/python3.12/socketserver.py", line 845, in write
+    self._sock.sendall(b)
+ConnectionResetError: [Errno 104] Connection reset by peer
+----------------------------------------
+127.0.0.1 - "GET /api/image/2 HTTP/1.1" 200 -
+127.0.0.1 - "GET /api/image/2 HTTP/1.1" 200 -
+127.0.0.1 - "GET /app.js HTTP/1.1" 200 -
+127.0.0.1 - "GET /api/image/2 HTTP/1.1" 200 -
+127.0.0.1 - "GET /api/image/2 HTTP/1.1" 200 -
+127.0.0.1 - "GET /api/image/2 HTTP/1.1" 200 -
+127.0.0.1 - "GET /api/image/2 HTTP/1.1" 200 -
+127.0.0.1 - "GET /api/image/2 HTTP/1.1" 200 -
+127.0.0.1 - "GET /app.js?v=3 HTTP/1.1" 200 -
+127.0.0.1 - "GET / HTTP/1.1" 200 -
+127.0.0.1 - "GET / HTTP/1.1" 200 -
+127.0.0.1 - "GET /style.css?v=3 HTTP/1.1" 200 -
+127.0.0.1 - "GET /app.js?v=3 HTTP/1.1" 200 -
+127.0.0.1 - code 404, message Not Found
+127.0.0.1 - "GET /favicon.ico HTTP/1.1" 404 -
+127.0.0.1 - "GET /api/dataset HTTP/1.1" 200 -
+127.0.0.1 - "GET /api/image/320 HTTP/1.1" 200 -
+127.0.0.1 - "GET / HTTP/1.1" 200 -
+127.0.0.1 - "GET /app.js?v=4 HTTP/1.1" 200 -
+127.0.0.1 - "GET / HTTP/1.1" 200 -
+127.0.0.1 - "GET /app.js?v=4 HTTP/1.1" 200 -
+127.0.0.1 - "GET /style.css?v=4 HTTP/1.1" 200 -
+127.0.0.1 - "GET /api/dataset HTTP/1.1" 200 -
+127.0.0.1 - code 404, message Not Found
+127.0.0.1 - "GET /favicon.ico HTTP/1.1" 404 -
+127.0.0.1 - "GET /api/image/320 HTTP/1.1" 200 -
+127.0.0.1 - "GET /api/image/2 HTTP/1.1" 200 -
+127.0.0.1 - "GET /api/image/2 HTTP/1.1" 200 -
+127.0.0.1 - "GET / HTTP/1.1" 200 -
+127.0.0.1 - "GET /app.js?v=5 HTTP/1.1" 200 -
+127.0.0.1 - "GET / HTTP/1.1" 200 -
+127.0.0.1 - "GET /style.css?v=5 HTTP/1.1" 200 -
+127.0.0.1 - "GET /app.js?v=5 HTTP/1.1" 200 -
+127.0.0.1 - "GET /api/dataset HTTP/1.1" 200 -
+127.0.0.1 - code 404, message Not Found
+127.0.0.1 - "GET /favicon.ico HTTP/1.1" 404 -
+127.0.0.1 - "GET /api/image/320 HTTP/1.1" 200 -
+127.0.0.1 - "GET / HTTP/1.1" 200 -
+127.0.0.1 - "GET /app.js?v=6 HTTP/1.1" 200 -
+127.0.0.1 - "GET /api/image/2 HTTP/1.1" 200 -
+127.0.0.1 - "GET / HTTP/1.1" 200 -
+127.0.0.1 - "GET /app.js?v=7 HTTP/1.1" 200 -
+127.0.0.1 - "GET / HTTP/1.1" 200 -
+127.0.0.1 - "GET /style.css?v=7 HTTP/1.1" 200 -
+127.0.0.1 - "GET /app.js?v=7 HTTP/1.1" 200 -
+127.0.0.1 - "GET /api/dataset HTTP/1.1" 200 -
+127.0.0.1 - code 404, message Not Found
+127.0.0.1 - "GET /favicon.ico HTTP/1.1" 404 -
+127.0.0.1 - "GET /api/image/320 HTTP/1.1" 200 -
+127.0.0.1 - "GET / HTTP/1.1" 200 -
+127.0.0.1 - "GET /style.css?v=7 HTTP/1.1" 200 -
+127.0.0.1 - "GET /app.js?v=7 HTTP/1.1" 200 -
+127.0.0.1 - "GET /api/dataset HTTP/1.1" 200 -
+127.0.0.1 - code 404, message Not Found
+127.0.0.1 - "GET /favicon.ico HTTP/1.1" 404 -
+127.0.0.1 - "GET /api/image/320 HTTP/1.1" 200 -
+127.0.0.1 - "GET / HTTP/1.1" 200 -
+127.0.0.1 - "GET /app.js?v=8 HTTP/1.1" 200 -
+127.0.0.1 - "GET / HTTP/1.1" 200 -
+127.0.0.1 - "GET /style.css?v=8 HTTP/1.1" 200 -
+127.0.0.1 - "GET /app.js?v=8 HTTP/1.1" 200 -
+127.0.0.1 - "GET /api/dataset HTTP/1.1" 200 -
+127.0.0.1 - code 404, message Not Found
+127.0.0.1 - "GET /favicon.ico HTTP/1.1" 404 -
+127.0.0.1 - "GET /api/image/320 HTTP/1.1" 200 -
+127.0.0.1 - "GET / HTTP/1.1" 200 -
+127.0.0.1 - "GET /app.js?v=8 HTTP/1.1" 200 -
+127.0.0.1 - "GET /style.css?v=8 HTTP/1.1" 200 -
+127.0.0.1 - "GET /api/dataset HTTP/1.1" 200 -
+127.0.0.1 - code 404, message Not Found
+127.0.0.1 - "GET /favicon.ico HTTP/1.1" 404 -
+127.0.0.1 - "GET /api/image/320 HTTP/1.1" 200 -
+127.0.0.1 - "GET /api/image/319 HTTP/1.1" 200 -
+127.0.0.1 - "GET /api/media/319?attempt=1 HTTP/1.1" 200 -
+127.0.0.1 - "GET / HTTP/1.1" 200 -
+127.0.0.1 - "GET /app.js?v=9 HTTP/1.1" 200 -
+127.0.0.1 - "GET / HTTP/1.1" 200 -
+127.0.0.1 - "GET /app.js?v=9 HTTP/1.1" 200 -
+127.0.0.1 - "GET /style.css?v=9 HTTP/1.1" 200 -
+127.0.0.1 - "GET /api/dataset HTTP/1.1" 200 -
+127.0.0.1 - code 404, message Not Found
+127.0.0.1 - "GET /favicon.ico HTTP/1.1" 404 -
+127.0.0.1 - "GET /api/image/319 HTTP/1.1" 200 -
+127.0.0.1 - "GET / HTTP/1.1" 200 -
+127.0.0.1 - "GET /app.js?v=10 HTTP/1.1" 200 -
+127.0.0.1 - "GET / HTTP/1.1" 200 -
+127.0.0.1 - "GET /app.js?v=11 HTTP/1.1" 200 -
+127.0.0.1 - "GET / HTTP/1.1" 200 -
+127.0.0.1 - "GET /app.js?v=11 HTTP/1.1" 200 -
+127.0.0.1 - "GET /style.css?v=11 HTTP/1.1" 200 -
+127.0.0.1 - "GET /api/dataset HTTP/1.1" 200 -
+127.0.0.1 - code 404, message Not Found
+127.0.0.1 - "GET /favicon.ico HTTP/1.1" 404 -
+127.0.0.1 - "GET /api/image/319 HTTP/1.1" 200 -
+127.0.0.1 - "GET /api/image/2 HTTP/1.1" 200 -
+127.0.0.1 - "GET /api/media/2?attempt=1 HTTP/1.1" 200 -
+127.0.0.1 - "GET /app.js?v=12 HTTP/1.1" 200 -
+127.0.0.1 - "GET / HTTP/1.1" 200 -
+127.0.0.1 - "GET / HTTP/1.1" 200 -
+127.0.0.1 - "GET /app.js?v=12 HTTP/1.1" 200 -
+127.0.0.1 - "GET /style.css?v=12 HTTP/1.1" 200 -
+127.0.0.1 - "GET /api/dataset HTTP/1.1" 200 -
+127.0.0.1 - code 404, message Not Found
+127.0.0.1 - "GET /favicon.ico HTTP/1.1" 404 -
+127.0.0.1 - "GET /api/image/2 HTTP/1.1" 200 -
+127.0.0.1 - "GET /api/image/185 HTTP/1.1" 200 -
+127.0.0.1 - "GET /api/media/185?attempt=1 HTTP/1.1" 200 -
+COCO browser listening on http://0.0.0.0:8888
+COCO source: https://huggingface.co/buckets/hamimmahmud0/SAM_COCO_v1_b2_3024/resolve/annotate/annotations/instances.json
+127.0.0.1 - "GET /api/health HTTP/1.1" 200 -

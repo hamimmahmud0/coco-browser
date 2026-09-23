@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>COCO 1.0 Annotation Browser</title>
+  <link rel="stylesheet" href="/style.css?v=12">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">C</span>
+      <div>
+        <h1>COCO 1.0 Annotation Browser</h1>
+        <p id="dataset-name">SAM_COCO_v1_b2_3024 / annotate</p>
+      </div>
+    </div>
+    <div class="header-actions">
+      <span id="save-state" class="save-state">Local edits enabled</span>
+      <button id="export-current" class="button secondary">Export image</button>
+      <button id="export-all" class="button primary">Export full COCO</button>
+    </div>
+  </header>
+
+  <main class="app-shell">
+    <aside class="sidebar">
+      <div class="search-wrap">
+        <input id="search" type="search" placeholder="Search images" autocomplete="off">
+        <span id="result-count" class="result-count"></span>
+      </div>
+      <div class="filter-row">
+        <button class="filter-button active" data-filter="all">All</button>
+        <button class="filter-button" data-filter="reviewed">Reviewed</button>
+        <button class="filter-button" data-filter="flagged">Flagged</button>
+        <button class="filter-button" data-filter="empty">No objects</button>
+      </div>
+      <div class="list-heading">
+        <span>Images</span>
+        <span id="selection-position"></span>
+      </div>
+      <div id="image-list" class="image-list" aria-live="polite"></div>
+      <div class="category-panel">
+        <div class="list-heading"><span>Categories</span><button id="all-categories" class="text-button">All</button></div>
+        <div id="category-list"></div>
+      </div>
+    </aside>
+
+    <section class="workspace">
+      <div class="toolbar">
+        <div class="toolbar-group navigation">
+          <button id="previous" class="icon-button" title="Previous image (A)">‹</button>
+          <button id="next" class="icon-button" title="Next image (D)">›</button>
+          <div class="zoom-controls" aria-label="Zoom controls">
+            <button id="zoom-out" class="icon-button" title="Zoom out">−</button>
+            <button id="zoom-reset" class="zoom-level" title="Reset zoom and pan">100%</button>
+            <button id="zoom-in" class="icon-button" title="Zoom in">+</button>
+            <button id="fit-image" class="icon-button" title="Fit image">Fit</button>
+            <button id="pan-mode" class="icon-button" title="Pan image (H or hold Space)">Pan</button>
+          </div>
+          <div class="image-title">
+            <strong id="image-name">Loading…</strong>
+            <span id="image-meta"></span>
+          </div>
+        </div>
+        <div class="toolbar-group tools">
+          <label class="toggle"><input id="show-boxes" type="checkbox" checked><span>Boxes</span></label>
+          <label class="toggle"><input id="show-masks" type="checkbox" checked><span>Masks</span></label>
+          <label class="toggle"><input id="draw-mode" type="checkbox"><span>Draw bbox <kbd>B</kbd></span></label>
+          <select id="active-category" title="Active category"></select>
+        </div>
+        <div class="toolbar-group review-tools">
+          <button id="mark-keep" class="review keep" title="Mark correct">Keep</button>
+          <button id="mark-fix" class="review fix" title="Needs fixes">Fix</button>
+          <button id="mark-remove" class="review remove" title="Remove annotation">Remove</button>
+          <button id="clear-review" class="review clear" title="Clear review">Clear</button>
+        </div>
+      </div>
+
+      <div id="canvas-area" class="canvas-area">
+        <div id="loading" class="loading">
+          <div class="spinner"></div>
+          <strong>Loading COCO dataset…</strong>
+          <span>Images stream directly from Hugging Face</span>
+        </div>
+        <div id="stage" class="stage" hidden>
+          <img id="image" alt="Dataset image">
+          <canvas id="overlay"></canvas>
+        </div>
+      </div>
+
+      <aside id="object-panel" class="object-panel">
+        <div class="object-heading">
+          <strong>Objects</strong>
+        </div>
+        <div id="object-list"></div>
+      </aside>
+
+      <footer class="statusbar">
+        <div id="annotation-status">No selection</div>
+        <div class="status-help">
+          <span><kbd>A</kbd>/<kbd>D</kbd> navigate</span>
+          <span><kbd>B</kbd> draw</span>
+          <span><kbd>M</kbd> masks</span>
+          <span><kbd>Delete</kbd> remove</span>
+          <span><kbd>1–8</kbd> category</span>
+        </div>
+        <div id="object-status"></div>
+      </footer>
+    </section>
+  </main>
+
+  <div id="toast" class="toast" role="status"></div>
+  <script src="/app.js?v=12"></script>
+</body>
+</html>
