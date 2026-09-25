@@ -5,44 +5,59 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
   <title>COCO 1.0 Annotation Browser</title>
-  <link rel="stylesheet" href="/style.css?v=32">
+  <link rel="stylesheet" href="/style.css?v=55">
 </head>
 <body>
   <header class="topbar">
-    <div class="brand">
-      <span class="brand-mark">C</span>
-      <div>
-        <h1>COCO 1.0 Annotation Browser</h1>
-        <p id="dataset-name">SAM_COCO_v1_b2_3024 / annotate</p>
+    <nav class="app-ribbon" aria-label="Application ribbon">
+      <div class="brand" role="presentation">TRAVAT</div>
+      <div class="ribbon-tabs" role="tablist" aria-label="Ribbon categories">
+        <button class="ribbon-tab active" type="button" role="tab" aria-selected="true" aria-controls="ribbon-project" data-ribbon-tab="project">Project</button>
+        <button class="ribbon-tab" type="button" role="tab" aria-selected="false" aria-controls="ribbon-dataset" data-ribbon-tab="dataset">Dataset</button>
+        <button class="ribbon-tab" type="button" role="tab" aria-selected="false" aria-controls="ribbon-edit" data-ribbon-tab="edit">Edit</button>
+        <button class="ribbon-tab" type="button" role="tab" aria-selected="false" aria-controls="ribbon-review" data-ribbon-tab="review">Review</button>
+        <button class="ribbon-tab" type="button" role="tab" aria-selected="false" aria-controls="ribbon-analysis" data-ribbon-tab="analysis">Analysis</button>
       </div>
-    </div>
-    <div class="header-actions">
-      <details class="tools-menu">
-        <summary>Tools</summary>
-        <div class="tools-popover">
-          <button id="island-frequency-tool" class="tool-menu-item" type="button">
-            <strong>Island Frequency</strong>
-            <span>Count connected mask regions across every instance</span>
-          </button>
-          <button id="shape-descriptor-tool" class="tool-menu-item" type="button">
-            <strong>Shape Descriptor Lab</strong>
-            <span>Compute selected mask shape descriptors by class</span>
-          </button>
-          <button id="excess-island-tool" class="tool-menu-item" type="button">
-            <strong>Excess Island Filter</strong>
-            <span>Find multi-island instances with excess regions</span>
-          </button>
+      <div class="ribbon-panels">
+        <div id="ribbon-project" class="ribbon-panel" role="tabpanel" data-ribbon-panel="project">
+          <div class="ribbon-grid">
+            <button id="open-project-button" class="ribbon-command small" type="button" aria-label="Open project" title="Open project"><i data-lucide="folder-open"></i></button>
+            <button id="new-project-button" class="ribbon-command small" type="button" aria-label="New project" title="New project"><i data-lucide="file-plus-2"></i></button>
+            <button id="project-button" class="ribbon-command small" type="button" aria-label="Project settings" title="Project settings"><i data-lucide="folder-cog"></i></button>
+            <button id="ribbon-project-autosave" class="ribbon-option toggle-button active" type="button" aria-pressed="true"><i data-lucide="save"></i><span>Autosave</span></button>
+            <span id="save-state" class="ribbon-status">Local edits enabled</span>
+          </div>
         </div>
-      </details>
-      <div class="history-toolbar">
-        <button id="undo" class="button secondary" type="button" title="Undo (Ctrl/Cmd+Z)">Undo</button>
-        <button id="redo" class="button secondary" type="button" title="Redo (Ctrl/Cmd+Shift+Z)">Redo</button>
-        <select id="history-select" title="History"></select>
+        <div id="ribbon-dataset" class="ribbon-panel" role="tabpanel" data-ribbon-panel="dataset" hidden>
+          <div class="ribbon-grid">
+            <button id="export-current" class="ribbon-command small" type="button" aria-label="Export image" title="Export image"><i data-lucide="image-down"></i></button>
+            <button id="export-all" class="ribbon-command large primary" type="button"><i data-lucide="file-json"></i><span>COCO</span></button>
+          </div>
+        </div>
+        <div id="ribbon-edit" class="ribbon-panel" role="tabpanel" data-ribbon-panel="edit" hidden>
+          <div class="ribbon-grid">
+            <button id="undo" class="ribbon-command small" type="button" aria-label="Undo" title="Undo (Ctrl/Cmd+Z)"><i data-lucide="undo-2"></i></button>
+            <button id="redo" class="ribbon-command small" type="button" aria-label="Redo" title="Redo (Ctrl/Cmd+Shift+Z)"><i data-lucide="redo-2"></i></button>
+            <label class="ribbon-option history-option"><span>History</span><select id="history-select" title="History"></select></label>
+          </div>
+        </div>
+        <div id="ribbon-review" class="ribbon-panel" role="tabpanel" data-ribbon-panel="review" hidden>
+          <div class="ribbon-grid">
+            <button id="mark-keep" class="ribbon-command small review keep" type="button" aria-label="Keep"><i data-lucide="check"></i></button>
+            <button id="mark-fix" class="ribbon-command small review fix" type="button" aria-label="Fix"><i data-lucide="wrench"></i></button>
+            <button id="mark-remove" class="ribbon-command small review remove" type="button" aria-label="Remove"><i data-lucide="trash-2"></i></button>
+            <button id="clear-review" class="ribbon-command small review clear" type="button" aria-label="Clear review"><i data-lucide="eraser"></i></button>
+          </div>
+        </div>
+        <div id="ribbon-analysis" class="ribbon-panel" role="tabpanel" data-ribbon-panel="analysis" hidden>
+          <div class="ribbon-grid">
+            <button id="island-frequency-tool" class="ribbon-command large" type="button"><i data-lucide="bar-chart-3"></i><span>Frequency</span></button>
+            <button id="shape-descriptor-tool" class="ribbon-command large" type="button"><i data-lucide="scan-line"></i><span>Descriptors</span></button>
+            <button id="excess-island-tool" class="ribbon-command large" type="button"><i data-lucide="list-filter"></i><span>Excess</span></button>
+          </div>
+        </div>
       </div>
-      <span id="save-state" class="save-state">Local edits enabled</span>
-      <button id="export-current" class="button secondary">Export image</button>
-      <button id="export-all" class="button primary">Export full COCO</button>
-    </div>
+    </nav>
   </header>
 
   <main class="app-shell">
@@ -86,16 +101,10 @@
           </div>
         </div>
         <div class="toolbar-group tools">
-          <label class="toggle"><input id="show-boxes" type="checkbox" checked><span>Boxes</span></label>
-          <label class="toggle"><input id="show-masks" type="checkbox" checked><span>Masks</span></label>
-          <label class="toggle"><input id="draw-mode" type="checkbox"><span>Draw bbox <kbd>B</kbd></span></label>
+          <button id="show-boxes" class="toggle toggle-button active" type="button" aria-pressed="true">Boxes</button>
+          <button id="show-masks" class="toggle toggle-button active" type="button" aria-pressed="true">Masks</button>
+          <button id="draw-mode" class="toggle toggle-button" type="button" aria-pressed="false">Draw bbox <kbd>B</kbd></button>
           <select id="active-category" title="Active category"></select>
-        </div>
-        <div class="toolbar-group review-tools">
-          <button id="mark-keep" class="review keep" title="Mark correct">Keep</button>
-          <button id="mark-fix" class="review fix" title="Needs fixes">Fix</button>
-          <button id="mark-remove" class="review remove" title="Remove annotation">Remove</button>
-          <button id="clear-review" class="review clear" title="Clear review">Clear</button>
         </div>
       </div>
 
@@ -268,9 +277,9 @@
         <button id="close-excess-island-modal" class="icon-button" type="button" title="Close">×</button>
       </div>
       <div id="excess-island-setup" class="excess-island-setup">
-        <label class="excess-filter-check"><input id="excess-island-range-enabled" type="checkbox" checked><span><strong>Island count range</strong><small>Filter instances by total number of mask islands</small></span></label>
+        <button id="excess-island-range-enabled" class="excess-filter-check toggle-button active" type="button" aria-pressed="true"><span><strong>Island count range</strong><small>Filter instances by total number of mask islands</small></span></button>
         <div class="excess-range-inputs"><label>Minimum <input id="excess-min-islands" type="number" min="2" value="2"></label><label>Maximum <input id="excess-max-islands" type="number" min="2" value="100000"></label></div>
-        <label class="excess-filter-check"><input id="excess-area-ratio-enabled" type="checkbox"><span><strong>Maximum area ratio</strong><small>Flag islands at or below this ratio of the largest island</small></span></label>
+        <button id="excess-area-ratio-enabled" class="excess-filter-check toggle-button" type="button" aria-pressed="false"><span><strong>Maximum area ratio</strong><small>Flag islands at or below this ratio of the largest island</small></span></button>
         <div class="excess-range-inputs"><label>Maximum ratio <input id="excess-max-area-ratio" type="number" min="0.01" max="1" step="0.01" value="0.25"></label></div>
         <div class="excess-run-row"><span id="excess-island-selection">Island range enabled</span><button id="run-excess-islands" class="button primary" type="button">Find excess islands</button><button id="excess-island-stop" class="button danger" type="button" hidden>Stop</button></div>
         <div id="excess-island-progress" class="shape-run-progress" hidden><progress id="excess-island-progress-bar" max="100" value="0"></progress><span id="excess-island-progress-count">0 / 0</span></div>
@@ -282,7 +291,50 @@
     </div>
   </div>
 
+  <div id="open-project-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="open-project-title" hidden>
+    <div class="modal-card open-project-card">
+      <div class="modal-header">
+        <div>
+          <h2 id="open-project-title">Open project</h2>
+          <p>Choose a project bucket or enter its Hugging Face address</p>
+        </div>
+        <button id="close-open-project-modal" class="icon-button" type="button" title="Close">×</button>
+      </div>
+      <div class="open-project-form">
+        <label>HF token<input id="open-project-token" type="password" placeholder="Required for private projects" autocomplete="off"></label>
+        <label>Namespace (optional)<input id="open-project-namespace" type="text" placeholder="Defaults to your account" autocomplete="off"></label>
+        <button id="list-projects" class="button secondary" type="button">List projects</button>
+        <div id="project-list" class="project-list"></div>
+        <label>Project bucket address<input id="open-project-bucket" type="text" placeholder="owner/project-bucket" autocomplete="off"></label>
+        <p id="open-project-status" class="project-status"></p>
+        <div class="project-actions"><button id="open-selected-project" class="button primary" type="button">Open project</button></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="project-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="project-title" hidden>
+    <div class="modal-card project-card">
+      <div class="modal-header">
+        <div>
+          <h2 id="project-title">Project save and sync</h2>
+          <p>Preserve edits, reviews, created objects, and undo history</p>
+        </div>
+        <button id="close-project-modal" class="icon-button" type="button" title="Close">×</button>
+      </div>
+      <div class="project-form">
+        <label>Project name<input id="project-name" type="text" maxlength="120" value="COCO project"></label>
+        <label>Import project bucket (optional)<input id="project-import-bucket" type="text" placeholder="owner/existing-project" autocomplete="off"></label>
+        <label>Save project bucket<input id="project-bucket" type="text" placeholder="owner/new-project" autocomplete="off"></label>
+        <label>HF token<input id="project-token" type="password" placeholder="Required for bucket sync" autocomplete="off"></label>
+        <button id="project-autosave" class="toggle toggle-button active" type="button" aria-pressed="true">Autosave after committed edits</button>
+        <p id="project-status" class="project-status">Configure a project bucket to sync remotely.</p>
+        <div class="project-actions"><button id="save-project" class="button primary" type="button">Save project</button></div>
+      </div>
+    </div>
+  </div>
+
   <div id="toast" class="toast" role="status"></div>
-  <script src="/app.js?v=32"></script>
+  <script src="https://unpkg.com/lucide@0.547.0/dist/umd/lucide.js"></script>
+  <script src="/app.js?v=55"></script>
 </body>
 </html>

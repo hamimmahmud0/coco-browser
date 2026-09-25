@@ -22,6 +22,7 @@ The default dataset is:
 - Stores edits in browser `localStorage` and exports valid COCO 1.0 JSON.
 - Uses a local `dataset/annotations/instances.json` and `dataset/images/` layout when available.
 - On startup, downloads the default HF bucket to `dataset/` when no valid local dataset exists.
+- Converts a dataset workspace into a project and restores edits, reviews, history, and current image location from a Hugging Face project bucket.
 - Runs background dataset tools with live status-bar progress.
 - Includes the **Island Frequency** tool for connected-component analysis across all instances.
 - Includes snapshot-based undo/redo and a Photoshop-style history selector.
@@ -47,6 +48,16 @@ python server.py
 
 At startup the server uses a valid `dataset/` directory automatically. If it is missing or incomplete, the server asks for an HF bucket path, such as `hamimmahmud0/SAM_COCO_v1_b2_3024/annotate`, and optionally asks for an HF token. It normalizes the path to `hf://buckets/...` and syncs it into `dataset/`.
 
+To resume a saved project, pass its project bucket instead:
+
+```bash
+python server.py --project-source owner/project-bucket --project-token "$HF_TOKEN"
+```
+
+A project bucket contains `project.json` and `dataset/`. The project document preserves edits, reviews, created annotations, mask strokes, undo/redo history, project settings, and the current image selection. Configure the bucket, token, and autosave behavior from the **Project** button. Tokens are kept in server memory and are never written into `project.json`.
+
+Application defaults are stored in `config.yaml`. Project files live under `~/.cache/coco-browser/<project-name>/`, with the dataset under that project's `dataset/` directory. On first interactive startup, the server checks the configured project bucket, creates it when missing, and imports a dataset into the project directory.
+
 Open:
 
 ```text
@@ -66,6 +77,11 @@ The server binds to `0.0.0.0:8888` by default, so it is also reachable from anot
 --dataset-dir PATH   Local dataset directory (default: ./dataset)
 --hf-source PATH     HF bucket path or hf://buckets URI used when local data is missing
 --hf-token TOKEN     Optional HF token; prefer the HF_TOKEN environment variable
+--project-dir PATH   Local project workspace override
+--project-name NAME  Project name under the app cache directory
+--project-bucket PATH Project bucket ID to create or import
+--project-source PATH Existing project bucket path to import
+--project-token TOKEN HF token for importing the project; prefer HF_TOKEN
 --no-prompt          Do not prompt when the local dataset is missing
 ```
 

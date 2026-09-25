@@ -1,0 +1,11 @@
+app:
+  name: coco-browser
+  cache_dir: ~/.cache/coco-browser
+  adopt_workspace_dataset: true
+
+project:
+  name: default
+  bucket: null
+  private: true
+  dataset_source: hamimmahmud0/SAM_COCO_v1_b2_3024/annotate
+  token_env: HF_TOKEN

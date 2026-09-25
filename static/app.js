@@ -42,6 +42,15 @@ const state = {
   inspectBrushSize: 12,
   maskEdits: readStorage("coco-mask-edits", {}),
   inspectImageData: null,
+  ribbonCategory: "project",
+  project: {
+    id: null,
+    name: "COCO project",
+    importBucket: "",
+    bucket: "",
+    autosave: true,
+    tokenConfigured: false,
+  },
   reviews: readStorage("coco-reviews", {}),
   edits: readStorage("coco-edits", {}),
   created: readStorage("coco-created", []),
@@ -77,6 +86,28 @@ const elements = {
   annotationStatus: document.querySelector("#annotation-status"),
   objectStatus: document.querySelector("#object-status"),
   saveState: document.querySelector("#save-state"),
+  newProjectButton: document.querySelector("#new-project-button"),
+  projectButton: document.querySelector("#project-button"),
+  projectModal: document.querySelector("#project-modal"),
+  closeProjectModal: document.querySelector("#close-project-modal"),
+  projectName: document.querySelector("#project-name"),
+  projectImportBucket: document.querySelector("#project-import-bucket"),
+  projectBucket: document.querySelector("#project-bucket"),
+  projectToken: document.querySelector("#project-token"),
+  projectAutosave: document.querySelector("#project-autosave"),
+  saveProject: document.querySelector("#save-project"),
+  projectStatus: document.querySelector("#project-status"),
+  openProjectButton: document.querySelector("#open-project-button"),
+  openProjectModal: document.querySelector("#open-project-modal"),
+  closeOpenProjectModal: document.querySelector("#close-open-project-modal"),
+  openProjectToken: document.querySelector("#open-project-token"),
+  openProjectNamespace: document.querySelector("#open-project-namespace"),
+  listProjects: document.querySelector("#list-projects"),
+  projectList: document.querySelector("#project-list"),
+  openProjectBucket: document.querySelector("#open-project-bucket"),
+  openProjectStatus: document.querySelector("#open-project-status"),
+  openSelectedProject: document.querySelector("#open-selected-project"),
+  ribbonProjectAutosave: document.querySelector("#ribbon-project-autosave"),
   undo: document.querySelector("#undo"),
   redo: document.querySelector("#redo"),
   historySelect: document.querySelector("#history-select"),
@@ -178,6 +209,28 @@ const toolRegistry = {
   },
 };
 
+function setRibbonCategory(category) {
+  state.ribbonCategory = category;
+upgradeToggleButtons();
+document.querySelectorAll("[data-ribbon-tab]").forEach((tab) => {
+    const active = tab.dataset.ribbonTab === category;
+    tab.classList.toggle("active", active);
+    tab.setAttribute("aria-selected", String(active));
+    tab.tabIndex = active ? 0 : -1;
+  });
+  document.querySelectorAll("[data-ribbon-panel]").forEach((panel) => {
+    panel.hidden = panel.dataset.ribbonPanel !== category;
+  });
+}
+
+function moveRibbonTab(category, offset) {
+  const tabs = [...document.querySelectorAll("[data-ribbon-tab]")];
+  const current = tabs.findIndex((tab) => tab.dataset.ribbonTab === category);
+  const next = tabs[(current + offset + tabs.length) % tabs.length];
+  setRibbonCategory(next.dataset.ribbonTab);
+  next.focus();
+}
+
 const context = elements.overlay.getContext("2d");
 let toastTimer = null;
 let saveTimer = null;
@@ -207,6 +260,292 @@ function persist() {
       showToast("Browser storage is full. Export before closing this tab.");
     }
   }, 200);
+}
+
+let projectSaveTimer = null;
+let projectSaveActive = false;
+let projectConfigDirty = false;
+
+function buildProjectDocument() {
+  return {
+    schema_version: 1,
+    project: {
+      id: state.project.id,
+      name: state.project.name || "COCO project",
+      importBucket: state.project.importBucket || "",
+      bucket: state.project.bucket || "",
+      autosave: Boolean(state.project.autosave),
+    },
+    dataset: {
+      source: state.dataset?.source || "",
+      image_count: state.dataset?.images?.length || 0,
+      annotation_count: state.dataset?.annotation_count || 0,
+      max_annotation_id: state.dataset?.max_annotation_id || 0,
+    },
+    workspace: captureHistoryState(),
+    history: {
+      index: historyIndex,
+      entries: JSON.parse(JSON.stringify(editHistory)),
+    },
+    ui: {
+      current_image_id: state.current?.id || null,
+      selected_annotation_id: state.selectedId,
+      filter: state.filter,
+      search: state.search,
+      show_boxes: state.showBoxes,
+      show_masks: state.showMasks,
+      draw_mode: state.drawMode,
+      active_category: state.activeCategory,
+      hidden_categories: [...state.hiddenCategories],
+      zoom: state.zoom,
+      pan_x: state.panX,
+      pan_y: state.panY,
+    },
+  };
+}
+
+function scheduleProjectAutosave() {
+  if (!state.project.autosave) return;
+  clearTimeout(projectSaveTimer);
+  projectSaveTimer = setTimeout(() => saveProjectNow(true), 1500);
+}
+
+async function saveProjectNow(autosave = false) {
+  if (projectSaveActive) return;
+  clearTimeout(projectSaveTimer);
+  projectSaveActive = true;
+  const token = elements.projectToken.value.trim();
+  const remoteSave = Boolean(state.project.bucket && (token || state.project.tokenConfigured));
+  elements.saveProject.disabled = remoteSave;
+  elements.saveProject.classList.toggle("is-loading", remoteSave);
+  elements.saveState.textContent = autosave ? "Autosaving project…" : "Saving project…";
+  try {
+    if (state.project.bucket && token) {
+      await request("/api/project/configure", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ bucket: state.project.bucket, token, autosave: state.project.autosave }),
+      });
+      state.project.tokenConfigured = true;
+      projectConfigDirty = false;
+    }
+    const startResponse = await request("/api/project/save", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ project: buildProjectDocument(), autosave }),
+    });
+    const { job_id: jobId } = await startResponse.json();
+    let result;
+    while (true) {
+      await wait(750);
+      const statusResponse = await request(`/api/project/save/status?job_id=${encodeURIComponent(jobId)}`);
+      const job = await statusResponse.json();
+      if (job.status === "completed") {
+        result = job.result;
+        break;
+      }
+      if (job.status === "error") throw new Error(job.error || "Project save failed");
+    }
+    state.project.id = result.project_id || state.project.id;
+    const localOnlyMessage = state.project.bucket && !state.project.tokenConfigured ? "Saved locally; enter HF token to enable sync" : "Saved locally";
+    elements.projectStatus.textContent = `${result.remote ? "Synced to Hugging Face" : localOnlyMessage} · ${new Date().toLocaleTimeString()}`;
+    elements.saveState.textContent = result.remote ? "Project synced" : "Project saved locally";
+  } catch (error) {
+    elements.saveState.textContent = "Project save failed";
+    elements.projectStatus.textContent = error.message;
+    showToast(error.message);
+  } finally {
+    projectSaveActive = false;
+    elements.saveProject.disabled = false;
+    elements.saveProject.classList.remove("is-loading");
+  }
+}
+
+function applyProjectDocument(projectDocument) {
+  const workspace = projectDocument.workspace || {};
+  const entries = Array.isArray(projectDocument.history?.entries) ? projectDocument.history.entries : [];
+  if (!Object.keys(workspace).length || !entries.length) throw new Error("Project has no restorable workspace history");
+  state.project = {
+    id: projectDocument.project?.id || null,
+    name: projectDocument.project?.name || "COCO project",
+    importBucket: projectDocument.project?.importBucket || "",
+    bucket: projectDocument.project?.bucket || "",
+    autosave: projectDocument.project?.autosave !== false,
+    tokenConfigured: state.project.tokenConfigured,
+  };
+  elements.projectName.value = state.project.name;
+  elements.projectImportBucket.value = state.project.importBucket;
+  elements.projectBucket.value = state.project.bucket;
+  elements.projectAutosave.checked = state.project.autosave;
+  elements.ribbonProjectAutosave.checked = state.project.autosave;
+  const firstState = entries[Math.min(Math.max(Number(projectDocument.history.index) || 0, 0), entries.length - 1)].state;
+  state.reviews = JSON.parse(JSON.stringify(firstState.reviews || {}));
+  state.edits = JSON.parse(JSON.stringify(firstState.edits || {}));
+  state.created = JSON.parse(JSON.stringify(firstState.created || []));
+  state.maskEdits = JSON.parse(JSON.stringify(firstState.maskEdits || {}));
+  state.nextNewId = firstState.nextNewId || 1;
+  editHistory.length = 0;
+  const historyOffset = Math.max(entries.length - historyLimit, 0);
+  for (const entry of entries.slice(historyOffset)) editHistory.push({ label: entry.label || "History", state: JSON.parse(JSON.stringify(entry.state)) });
+  historyIndex = Math.min(Math.max((Number(projectDocument.history.index) || 0) - historyOffset, 0), editHistory.length - 1);
+  const ui = projectDocument.ui || {};
+  state.filter = ui.filter || "all";
+  state.search = ui.search || "";
+  state.showBoxes = ui.show_boxes !== false;
+  state.showMasks = ui.show_masks !== false;
+  state.drawMode = Boolean(ui.draw_mode);
+  state.activeCategory = ui.active_category || state.activeCategory;
+  state.hiddenCategories = new Set(ui.hidden_categories || []);
+  state.zoom = ui.zoom || 1;
+  state.panX = ui.pan_x || 0;
+  state.panY = ui.pan_y || 0;
+  elements.search.value = state.search;
+  elements.showBoxes.checked = state.showBoxes;
+  elements.showMasks.checked = state.showMasks;
+  elements.drawMode.checked = state.drawMode;
+  document.querySelectorAll(".filter-button").forEach((button) => button.classList.toggle("active", button.dataset.filter === state.filter));
+  persist();
+  renderHistoryToolbar();
+  return ui;
+}
+
+async function loadProjectDocument() {
+  const configResponse = await fetch("/api/project/config");
+  if (configResponse.ok) {
+    const config = await configResponse.json();
+    state.project.bucket = config.bucket || state.project.bucket;
+    state.project.tokenConfigured = Boolean(config.token_configured);
+    state.project.autosave = config.autosave !== false;
+  }
+  const response = await fetch("/api/project");
+  if (response.status === 404) return null;
+  if (!response.ok) throw new Error(await response.text() || "Unable to load project");
+  return applyProjectDocument(await response.json());
+}
+
+function openProjectModal() {
+  elements.projectName.value = state.project.name;
+  elements.projectImportBucket.value = state.project.importBucket;
+  elements.projectBucket.value = state.project.bucket;
+  elements.projectAutosave.checked = state.project.autosave;
+  elements.ribbonProjectAutosave.checked = state.project.autosave;
+  elements.projectStatus.textContent = state.project.bucket
+    ? `Bucket: ${state.project.bucket}${state.project.tokenConfigured ? " · token configured" : " · enter token to enable sync"}`
+    : "Configure a Hugging Face project bucket to sync remotely";
+  elements.projectModal.hidden = false;
+}
+
+async function startNewProject() {
+  if (state.activeToolJob || state.activeShapeJob || state.activeCleanupJob) {
+    showToast("Stop the active analysis before starting a new project");
+    return;
+  }
+  if (!window.confirm("Start a new project? Current unsaved workspace edits will be cleared.")) return;
+  clearTimeout(projectSaveTimer);
+  projectSaveTimer = null;
+  projectSaveActive = false;
+  try {
+    await request("/api/project/reset", { method: "POST" });
+  } catch (error) {
+    showToast(error.message);
+    return;
+  }
+  state.project = { id: null, name: "New project", importBucket: "", bucket: "", autosave: true, tokenConfigured: false };
+  state.reviews = {};
+  state.edits = {};
+  state.created = [];
+  state.maskEdits = {};
+  state.nextNewId = (state.dataset?.max_annotation_id || 0) + 1;
+  state.selectedId = null;
+  state.filter = "all";
+  state.search = "";
+  state.hiddenCategories = new Set();
+  state.showBoxes = true;
+  state.showMasks = true;
+  state.drawMode = false;
+  state.activeCategory = state.dataset?.categories?.[0]?.id || 1;
+  initializeHistory();
+  persist();
+  refreshCurrentImageState();
+  renderImageList();
+  renderCategories();
+  renderObjects();
+  draw();
+  openProjectModal();
+  showToast("New project workspace created");
+}
+
+function openProjectBrowser() {
+  elements.projectList.replaceChildren();
+  elements.openProjectStatus.textContent = "";
+  elements.openProjectModal.hidden = false;
+}
+
+function closeOpenProjectBrowser() {
+  elements.openProjectModal.hidden = true;
+}
+
+async function listAvailableProjects() {
+  elements.listProjects.disabled = true;
+  elements.openProjectStatus.textContent = "Loading projects…";
+  try {
+    const response = await request("/api/projects/list", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: elements.openProjectToken.value.trim(), namespace: elements.openProjectNamespace.value.trim() }),
+    });
+    const result = await response.json();
+    elements.projectList.replaceChildren();
+    const projects = result.projects.filter((project) => project.is_project);
+    if (!projects.length) {
+      elements.projectList.append(element("div", "project-list-empty", "No project buckets found."));
+    } else {
+      for (const project of projects) {
+        const button = element("button", "project-list-item");
+        button.type = "button";
+        button.append(element("span", "", project.id), element("small", "", `${formatNumber(project.total_files)} files`));
+        button.addEventListener("click", () => {
+          elements.openProjectBucket.value = project.id;
+          elements.projectList.querySelectorAll(".project-list-item").forEach((item) => item.classList.remove("active"));
+          button.classList.add("active");
+        });
+        elements.projectList.append(button);
+      }
+    }
+    elements.openProjectStatus.textContent = `${projects.length} project bucket${projects.length === 1 ? "" : "s"} available.`;
+  } catch (error) {
+    elements.openProjectStatus.textContent = error.message;
+  } finally {
+    elements.listProjects.disabled = false;
+  }
+}
+
+async function openSelectedProject() {
+  const bucket = elements.openProjectBucket.value.trim();
+  if (!bucket) {
+    elements.openProjectStatus.textContent = "Enter or select a project bucket.";
+    return;
+  }
+  elements.openSelectedProject.disabled = true;
+  elements.openProjectStatus.textContent = "Opening project…";
+  try {
+    await request("/api/project/open", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ bucket, token: elements.openProjectToken.value.trim() }),
+    });
+    closeOpenProjectBrowser();
+    await loadDataset();
+    showToast(`Opened project ${bucket}`);
+  } catch (error) {
+    elements.openProjectStatus.textContent = error.message;
+  } finally {
+    elements.openSelectedProject.disabled = false;
+  }
+}
+
+function closeProjectModal() {
+  elements.projectModal.hidden = true;
 }
 
 function captureHistoryState() {
@@ -256,6 +595,7 @@ function commitHistory(label, before) {
   if (editHistory.length > historyLimit) editHistory.shift();
   historyIndex = editHistory.length - 1;
   renderHistoryToolbar();
+  scheduleProjectAutosave();
 }
 
 function restoreHistory(index) {
@@ -313,6 +653,45 @@ function element(tag, className, text) {
   if (className) node.className = className;
   if (text !== undefined) node.textContent = text;
   return node;
+}
+
+function upgradeToggleButton(button, initial = button.classList.contains("active")) {
+  if (button.dataset.toggleReady) return button;
+  let active = Boolean(initial);
+  const render = () => {
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", String(active));
+  };
+  Object.defineProperty(button, "checked", {
+    configurable: true,
+    get: () => active,
+    set: (value) => {
+      active = Boolean(value);
+      render();
+    },
+  });
+  button.type = "button";
+  button.dataset.toggleReady = "true";
+  render();
+  button.addEventListener("click", () => {
+    button.checked = !button.checked;
+    button.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  return button;
+}
+
+function upgradeToggleButtons() {
+  for (const button of [
+    elements.ribbonProjectAutosave,
+    elements.projectAutosave,
+    elements.showBoxes,
+    elements.showMasks,
+    elements.drawMode,
+    elements.excessRangeEnabled,
+    elements.excessAreaRatioEnabled,
+  ]) {
+    upgradeToggleButton(button);
+  }
 }
 
 function showToast(message) {
@@ -532,9 +911,8 @@ function renderShapeSetup() {
   if (!state.dataset) return;
   if (!elements.shapeDescriptorList.children.length) {
     for (const [key, label, note] of shapeDescriptorCatalog) {
-      const labelNode = element("label", "shape-check");
-      const input = document.createElement("input");
-      input.type = "checkbox";
+      const labelNode = element("div", "shape-check");
+      const input = upgradeToggleButton(element("button", "toggle-button"));
       input.dataset.descriptor = key;
       input.addEventListener("change", updateShapeSelectionSummary);
       const copy = element("span");
@@ -545,10 +923,8 @@ function renderShapeSetup() {
   }
   if (!elements.shapeClassList.children.length) {
     for (const category of state.dataset.categories) {
-      const labelNode = element("label", "shape-check");
-      const input = document.createElement("input");
-      input.type = "checkbox";
-      input.checked = true;
+      const labelNode = element("div", "shape-check");
+      const input = upgradeToggleButton(element("button", "toggle-button"), true);
       input.dataset.categoryId = category.id;
       input.addEventListener("change", updateShapeSelectionSummary);
       const copy = element("span");
@@ -561,11 +937,11 @@ function renderShapeSetup() {
 }
 
 function selectedShapeDescriptors() {
-  return [...elements.shapeDescriptorList.querySelectorAll("input:checked")].map((input) => input.dataset.descriptor);
+  return [...elements.shapeDescriptorList.querySelectorAll(".toggle-button.active")].map((input) => input.dataset.descriptor);
 }
 
 function selectedShapeClasses() {
-  return [...elements.shapeClassList.querySelectorAll("input:checked")].map((input) => input.dataset.categoryId);
+  return [...elements.shapeClassList.querySelectorAll(".toggle-button.active")].map((input) => input.dataset.categoryId);
 }
 
 function updateShapeSelectionSummary() {
@@ -1365,10 +1741,18 @@ async function loadDataset() {
     state.images = data.images;
     if (data.categories.length) state.activeCategory = data.categories[0].id;
     renderCategories();
+    const projectUi = await loadProjectDocument();
     applyFilter();
-    const requested = Number(location.hash.slice(1));
+    const requested = projectUi?.current_image_id || Number(location.hash.slice(1));
     const initial = state.filtered.find((image) => image.id === requested) || state.filtered[0];
-    if (initial) await selectImage(initial.id);
+    if (initial) {
+      await selectImage(initial.id);
+      if (projectUi?.selected_annotation_id && state.imageData?.annotations.some((annotation) => annotation.id === projectUi.selected_annotation_id)) {
+        state.selectedId = projectUi.selected_annotation_id;
+        renderObjects();
+        draw();
+      }
+    }
   } catch (error) {
     elements.loading.innerHTML = "";
     elements.loading.append(element("strong", "", "Could not load dataset"));
@@ -1382,10 +1766,8 @@ function renderCategories() {
   elements.activeCategory.replaceChildren();
   for (const category of state.dataset.categories) {
     const color = state.dataset.category_colors[category.id];
-    const label = element("label", "category-row");
-    const checkbox = document.createElement("input");
-    checkbox.type = "checkbox";
-    checkbox.checked = true;
+    const label = element("div", "category-row");
+    const checkbox = upgradeToggleButton(element("button", "category-toggle toggle-button"), true);
     checkbox.style.setProperty("--color", color);
     checkbox.addEventListener("change", () => {
       if (checkbox.checked) state.hiddenCategories.delete(category.id);
@@ -2138,8 +2520,59 @@ function downloadBlob(blob, filename) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+document.querySelectorAll("[data-ribbon-tab]").forEach((tab) => {
+  tab.addEventListener("click", () => setRibbonCategory(tab.dataset.ribbonTab));
+  tab.addEventListener("keydown", (event) => {
+    if (event.key === "ArrowRight") moveRibbonTab(tab.dataset.ribbonTab, 1);
+    if (event.key === "ArrowLeft") moveRibbonTab(tab.dataset.ribbonTab, -1);
+  });
+});
+setRibbonCategory(state.ribbonCategory);
 elements.stopToolTask.addEventListener("click", stopActiveTask);
 elements.shapeStopTask.addEventListener("click", stopActiveTask);
+elements.newProjectButton.addEventListener("click", startNewProject);
+elements.openProjectButton.addEventListener("click", openProjectBrowser);
+elements.closeOpenProjectModal.addEventListener("click", closeOpenProjectBrowser);
+elements.openProjectModal.addEventListener("click", (event) => {
+  if (event.target === elements.openProjectModal) closeOpenProjectBrowser();
+});
+elements.listProjects.addEventListener("click", listAvailableProjects);
+elements.openSelectedProject.addEventListener("click", openSelectedProject);
+elements.projectButton.addEventListener("click", openProjectModal);
+elements.closeProjectModal.addEventListener("click", closeProjectModal);
+elements.projectModal.addEventListener("click", (event) => {
+  if (event.target === elements.projectModal) closeProjectModal();
+});
+elements.saveProject.addEventListener("click", () => {
+  state.project.name = elements.projectName.value.trim() || "COCO project";
+  state.project.importBucket = elements.projectImportBucket.value.trim();
+  state.project.bucket = elements.projectBucket.value.trim();
+  state.project.autosave = elements.projectAutosave.checked;
+  projectConfigDirty = true;
+  saveProjectNow(false);
+});
+elements.projectName.addEventListener("input", () => {
+  state.project.name = elements.projectName.value.trim() || "COCO project";
+  projectConfigDirty = true;
+});
+elements.projectImportBucket.addEventListener("input", () => {
+  state.project.importBucket = elements.projectImportBucket.value.trim();
+  projectConfigDirty = true;
+});
+elements.projectBucket.addEventListener("input", () => {
+  state.project.bucket = elements.projectBucket.value.trim();
+  projectConfigDirty = true;
+});
+elements.projectAutosave.addEventListener("change", () => {
+  state.project.autosave = elements.projectAutosave.checked;
+  elements.ribbonProjectAutosave.checked = state.project.autosave;
+  projectConfigDirty = true;
+});
+elements.ribbonProjectAutosave.addEventListener("change", () => {
+  state.project.autosave = elements.ribbonProjectAutosave.checked;
+  elements.projectAutosave.checked = state.project.autosave;
+  projectConfigDirty = true;
+});
 elements.undo.addEventListener("click", undoHistory);
 elements.redo.addEventListener("click", redoHistory);
 elements.historySelect.addEventListener("change", (event) => restoreHistory(Number(event.target.value)));
@@ -2184,7 +2617,7 @@ elements.allCategories.addEventListener("click", () => {
     state.hiddenCategories = new Set(state.dataset.categories.map((category) => category.id));
   }
   for (const [index, category] of state.dataset.categories.entries()) {
-    const input = elements.categoryList.children[index]?.querySelector("input");
+    const input = elements.categoryList.children[index]?.querySelector(".category-toggle");
     if (input) input.checked = !state.hiddenCategories.has(category.id);
   }
   renderObjects();
@@ -2238,19 +2671,19 @@ elements.shapeModal.addEventListener("click", (event) => {
   if (event.target === elements.shapeModal) closeShapeModal();
 });
 elements.shapeDescriptorsAll.addEventListener("click", () => {
-  for (const input of elements.shapeDescriptorList.querySelectorAll("input")) input.checked = true;
+  for (const input of elements.shapeDescriptorList.querySelectorAll(".toggle-button")) input.checked = true;
   updateShapeSelectionSummary();
 });
 elements.shapeDescriptorsNone.addEventListener("click", () => {
-  for (const input of elements.shapeDescriptorList.querySelectorAll("input")) input.checked = false;
+  for (const input of elements.shapeDescriptorList.querySelectorAll(".toggle-button")) input.checked = false;
   updateShapeSelectionSummary();
 });
 elements.shapeClassesAll.addEventListener("click", () => {
-  for (const input of elements.shapeClassList.querySelectorAll("input")) input.checked = true;
+  for (const input of elements.shapeClassList.querySelectorAll(".toggle-button")) input.checked = true;
   updateShapeSelectionSummary();
 });
 elements.shapeClassesNone.addEventListener("click", () => {
-  for (const input of elements.shapeClassList.querySelectorAll("input")) input.checked = false;
+  for (const input of elements.shapeClassList.querySelectorAll(".toggle-button")) input.checked = false;
   updateShapeSelectionSummary();
 });
 elements.runShapeDescriptors.addEventListener("click", runShapeDescriptorLab);
@@ -2353,6 +2786,10 @@ document.addEventListener("keydown", (event) => {
   }
   if (key === "delete" || key === "backspace") setReview("remove");
   if (key === "escape") {
+    if (!elements.openProjectModal.hidden) {
+      closeOpenProjectBrowser();
+      return;
+    }
     if (!elements.excessIslandModal.hidden) {
       closeExcessIslandFilter();
       return;
@@ -2388,6 +2825,10 @@ document.addEventListener("keyup", (event) => {
   state.spaceDown = false;
   setPanMode(state.panMode);
 });
+
+if (window.lucide) {
+  window.lucide.createIcons({ attrs: { "stroke-width": 1.8 } });
+}
 
 initializeHistory();
 loadDataset();

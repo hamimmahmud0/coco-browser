@@ -7,6 +7,7 @@ from multiprocessing import get_context
 import mimetypes
 import numpy as np
 import os
+import re
 import sys
 import threading
 import traceback
@@ -14,6 +15,7 @@ import time
 import uuid
 import urllib.error
 import urllib.request
+import yaml
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -33,7 +35,29 @@ IMAGE_URL = os.environ.get(
 DEFAULT_HF_SOURCE = "hf://buckets/hamimmahmud0/SAM_COCO_v1_b2_3024/annotate"
 ROOT = Path(__file__).resolve().parent
 STATIC = ROOT / "static"
-DATASET_DIR = ROOT / "dataset"
+CONFIG_PATH = ROOT / "config.yaml"
+
+
+def load_app_config():
+    try:
+        with CONFIG_PATH.open(encoding="utf-8") as file:
+            data = yaml.safe_load(file) or {}
+    except (OSError, yaml.YAMLError):
+        data = {}
+    return data if isinstance(data, dict) else {}
+
+
+APP_CONFIG = load_app_config()
+APP_NAME = str(APP_CONFIG.get("app", {}).get("name", "coco-browser"))
+PROJECT_CONFIG = APP_CONFIG.get("project", {}) if isinstance(APP_CONFIG.get("project", {}), dict) else {}
+PROJECT_CACHE_DIR = Path(str(APP_CONFIG.get("app", {}).get("cache_dir", f"~/.cache/{APP_NAME}"))).expanduser()
+PROJECT_NAME = os.environ.get("PROJECT_NAME", str(PROJECT_CONFIG.get("name", "default")))
+PROJECT_DIR = PROJECT_CACHE_DIR / (re.sub(r"[^A-Za-z0-9._-]+", "-", PROJECT_NAME).strip("-") or "default")
+DATASET_DIR = PROJECT_DIR / "dataset"
+PROJECT_SOURCE = ""
+PROJECT_TOKEN = None
+PROJECT_AUTOSAVE = True
+PROJECT_ID = None
 USE_LOCAL_DATASET = True
 DATASET_SOURCE = ""
 _lock = threading.Lock()
@@ -42,6 +66,8 @@ _dataset = None
 _jobs = {}
 _shape_jobs = {}
 _cleanup_jobs = {}
+_project_save_jobs = {}
+_project_save_lock = threading.Lock()
 _shape_references = {}
 _job_cancel_events = {}
 _active_pools = {}
@@ -55,9 +81,13 @@ def local_dataset_image_path(image):
     return DATASET_DIR / "images" / Path(image["file_name"]).name
 
 
-def validate_local_dataset():
-    annotation_path = local_dataset_annotation_path()
-    images_dir = DATASET_DIR / "images"
+def dataset_image_path(dataset_dir, image):
+    return dataset_dir / "images" / Path(image["file_name"]).name
+
+
+def validate_dataset_directory(dataset_dir):
+    annotation_path = dataset_dir / "annotations" / "instances.json"
+    images_dir = dataset_dir / "images"
     if not annotation_path.is_file() or not images_dir.is_dir():
         return False
     try:
@@ -65,7 +95,11 @@ def validate_local_dataset():
             data = json.load(file)
     except (OSError, json.JSONDecodeError):
         return False
-    return bool(data.get("images")) and all(local_dataset_image_path(image).is_file() for image in data["images"])
+    return bool(data.get("images")) and all(dataset_image_path(dataset_dir, image).is_file() for image in data["images"])
+
+
+def validate_local_dataset():
+    return validate_dataset_directory(DATASET_DIR)
 
 
 def normalize_hf_source(source):
@@ -77,16 +111,271 @@ def normalize_hf_source(source):
     return f"hf://buckets/{source.lstrip('/')}"
 
 
-def sync_hf_dataset(source, token=None):
+def sync_hf_directory(source, destination, token=None, include=None):
     try:
         from huggingface_hub import sync_bucket
     except ImportError as error:
-        raise RuntimeError("huggingface_hub is required to synchronize a dataset") from error
-    source = normalize_hf_source(source)
-    sync_bucket(source=source, dest=str(DATASET_DIR), delete=False, token=token or os.environ.get("HF_TOKEN"), quiet=False)
+        raise RuntimeError("huggingface_hub is required to synchronize Hugging Face buckets") from error
+    source = str(source) if isinstance(source, Path) else normalize_hf_source(source)
+    sync_bucket(
+        source=source,
+        dest=str(destination),
+        delete=False,
+        include=include,
+        token=token or os.environ.get("HF_TOKEN"),
+        quiet=False,
+    )
+    return source
+
+
+def sync_hf_dataset(source, token=None):
+    source = sync_hf_directory(source, DATASET_DIR, token)
     if not validate_local_dataset():
         raise RuntimeError(f"Dataset synchronization completed but {local_dataset_annotation_path()} is missing or invalid")
     return source
+
+
+def project_manifest_path():
+    return PROJECT_DIR / "project.json"
+
+
+def read_project_manifest():
+    try:
+        with project_manifest_path().open(encoding="utf-8") as file:
+            document = json.load(file)
+    except (OSError, json.JSONDecodeError):
+        return None
+    return document if isinstance(document, dict) and document.get("schema_version") == 1 else None
+
+
+def project_bucket_id(source):
+    normalized = normalize_hf_source(source)
+    bucket_path = normalized.removeprefix("hf://buckets/").strip("/")
+    parts = [part for part in bucket_path.split("/") if part]
+    if len(parts) != 2:
+        raise ValueError("Project bucket must be owner/bucket without a prefix")
+    return "/".join(parts)
+
+
+def ensure_project_bucket(source, token=None, allow_override=True):
+    from huggingface_hub import bucket_info, create_bucket, get_bucket_file_metadata
+    from huggingface_hub.errors import BucketNotFoundError, EntryNotFoundError
+
+    bucket_id = project_bucket_id(source)
+    normalized = f"hf://buckets/{bucket_id}"
+    try:
+        bucket_info(bucket_id, token=token or None)
+    except BucketNotFoundError:
+        create_bucket(bucket_id, private=bool(PROJECT_CONFIG.get("private", True)), exist_ok=True, token=token or None)
+        return normalized, False
+    try:
+        get_bucket_file_metadata(bucket_id, "project.json", token=token or None)
+    except EntryNotFoundError:
+        if allow_override and sys.stdin.isatty():
+            if input(f"Bucket {bucket_id} exists but is not a project. Override it? [y/N]: ").strip().lower() not in {"y", "yes"}:
+                raise RuntimeError(f"Bucket {bucket_id} is not a project bucket")
+        elif allow_override:
+            raise RuntimeError(f"Bucket {bucket_id} exists but is not a project; use an interactive terminal to confirm override")
+        else:
+            raise RuntimeError(f"Bucket {bucket_id} exists but is not a project bucket")
+        return normalized, False
+    return normalized, True
+
+
+def prepare_local_project_dataset(token=None):
+    global DATASET_DIR
+    if validate_dataset_directory(DATASET_DIR):
+        return
+    legacy_dataset = ROOT / "dataset"
+    if APP_CONFIG.get("app", {}).get("adopt_workspace_dataset", True) and validate_dataset_directory(legacy_dataset):
+        DATASET_DIR.parent.mkdir(parents=True, exist_ok=True)
+        if not DATASET_DIR.exists():
+            DATASET_DIR.symlink_to(legacy_dataset, target_is_directory=True)
+        if validate_dataset_directory(DATASET_DIR):
+            return
+    dataset_source = PROJECT_CONFIG.get("dataset_source") or DEFAULT_HF_SOURCE
+    sync_hf_directory(dataset_source, DATASET_DIR, token)
+    if not validate_dataset_directory(DATASET_DIR):
+        raise RuntimeError(f"Dataset import completed but {local_dataset_annotation_path()} is missing or invalid")
+
+
+def prepare_project(project_dir=None, project_name=None, project_source=None, project_token=None, no_prompt=False):
+    global DATASET_DIR, PROJECT_DIR, PROJECT_SOURCE, PROJECT_TOKEN, PROJECT_ID, PROJECT_AUTOSAVE, USE_LOCAL_DATASET, DATASET_SOURCE, PROJECT_NAME
+    if project_name:
+        PROJECT_NAME = project_name
+    if project_dir:
+        PROJECT_DIR = Path(project_dir).expanduser().resolve()
+    else:
+        PROJECT_DIR = PROJECT_CACHE_DIR / (re.sub(r"[^A-Za-z0-9._-]+", "-", PROJECT_NAME).strip("-") or "default")
+    PROJECT_DIR.mkdir(parents=True, exist_ok=True)
+    DATASET_DIR = PROJECT_DIR / "dataset"
+    PROJECT_TOKEN = project_token or os.environ.get(str(PROJECT_CONFIG.get("token_env", "HF_TOKEN")))
+    manifest = read_project_manifest()
+    project_metadata = manifest.get("project", {}) if manifest else {}
+    source = project_source or os.environ.get("HF_PROJECT_BUCKET") or os.environ.get("HF_PROJECT_SOURCE") or PROJECT_CONFIG.get("bucket") or project_metadata.get("bucket")
+    if not source and not no_prompt and sys.stdin.isatty():
+        source = input("Project bucket ID [owner/bucket]: ").strip()
+    if source and not PROJECT_TOKEN and not no_prompt and sys.stdin.isatty():
+        PROJECT_TOKEN = getpass.getpass("HF token: ").strip() or None
+    if source and PROJECT_TOKEN:
+        PROJECT_SOURCE, remote_project = ensure_project_bucket(source, PROJECT_TOKEN, allow_override=not no_prompt)
+        if remote_project:
+            if not manifest or not validate_dataset_directory(DATASET_DIR):
+                print(f"Project bucket: {PROJECT_SOURCE}; importing project workspace...", flush=True)
+                sync_hf_directory(PROJECT_SOURCE, PROJECT_DIR, PROJECT_TOKEN)
+                manifest = read_project_manifest()
+            if not manifest or not validate_dataset_directory(DATASET_DIR):
+                raise RuntimeError("Project bucket is missing project.json or dataset/")
+        else:
+            prepare_local_project_dataset(PROJECT_TOKEN)
+    elif source and not (no_prompt and manifest and validate_dataset_directory(DATASET_DIR)):
+        raise ValueError("An HF token is required for project bucket access")
+    else:
+        if not manifest:
+            if no_prompt or not sys.stdin.isatty():
+                prepare_local_project_dataset(PROJECT_TOKEN)
+            else:
+                raise RuntimeError("A project bucket is required on first run")
+        elif not validate_dataset_directory(DATASET_DIR):
+            prepare_local_project_dataset(PROJECT_TOKEN)
+    manifest = read_project_manifest() or {}
+    project_metadata = manifest.get("project", {})
+    PROJECT_ID = project_metadata.get("id")
+    PROJECT_SOURCE = PROJECT_SOURCE or project_metadata.get("bucket", "")
+    PROJECT_AUTOSAVE = bool(project_metadata.get("autosave", True))
+    if not validate_dataset_directory(DATASET_DIR):
+        raise RuntimeError(f"Project dataset is missing from {DATASET_DIR}")
+    USE_LOCAL_DATASET = True
+    DATASET_SOURCE = str(local_dataset_annotation_path())
+    return True
+
+
+def save_project_document(document, autosave=False):
+    global PROJECT_SOURCE, PROJECT_TOKEN, PROJECT_AUTOSAVE, PROJECT_ID
+    if not isinstance(document, dict) or document.get("schema_version") != 1:
+        raise ValueError("Unsupported project document")
+    PROJECT_DIR.mkdir(parents=True, exist_ok=True)
+    metadata = document.setdefault("project", {})
+    PROJECT_ID = metadata.get("id") or str(uuid.uuid4())
+    metadata["id"] = PROJECT_ID
+    metadata.setdefault("name", "COCO project")
+    metadata["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    PROJECT_AUTOSAVE = bool(metadata.get("autosave", PROJECT_AUTOSAVE))
+    metadata["autosave"] = PROJECT_AUTOSAVE
+    if PROJECT_SOURCE:
+        metadata["bucket"] = PROJECT_SOURCE
+    temporary_path = project_manifest_path().with_suffix(".json.tmp")
+    temporary_path.write_text(json.dumps(document, separators=(",", ":")), encoding="utf-8")
+    temporary_path.replace(project_manifest_path())
+    remote = bool(PROJECT_SOURCE and PROJECT_TOKEN)
+    if remote:
+        sync_hf_directory(DATASET_DIR, f"{PROJECT_SOURCE}/dataset", PROJECT_TOKEN)
+        sync_hf_directory(PROJECT_DIR, PROJECT_SOURCE, PROJECT_TOKEN, include=["project.json"])
+    return {"saved": True, "project_id": PROJECT_ID, "autosave": autosave, "remote": remote}
+
+
+def configure_project(bucket, token, autosave=True):
+    global PROJECT_SOURCE, PROJECT_TOKEN, PROJECT_AUTOSAVE
+    if not bucket:
+        raise ValueError("Project bucket is required")
+    if not token:
+        raise ValueError("HF token is required for project sync")
+    PROJECT_SOURCE, _ = ensure_project_bucket(bucket, token, allow_override=False)
+    PROJECT_TOKEN = token
+    PROJECT_AUTOSAVE = bool(autosave)
+    return {"configured": True, "bucket": PROJECT_SOURCE, "autosave": PROJECT_AUTOSAVE}
+
+
+def list_project_buckets(token=None, namespace=None):
+    from huggingface_hub import get_bucket_file_metadata, list_buckets
+    from huggingface_hub.errors import EntryNotFoundError
+
+    projects = []
+    for bucket in list_buckets(namespace=namespace or None, token=token or None):
+        try:
+            get_bucket_file_metadata(bucket.id, "project.json", token=token or None)
+            is_project = True
+        except EntryNotFoundError:
+            is_project = False
+        projects.append({
+            "id": bucket.id,
+            "private": bool(getattr(bucket, "private", False)),
+            "size": int(getattr(bucket, "size", 0) or 0),
+            "total_files": int(getattr(bucket, "total_files", 0) or 0),
+            "is_project": is_project,
+        })
+    return projects
+
+
+def open_project(bucket, token):
+    global PROJECT_SOURCE, PROJECT_TOKEN, PROJECT_ID, PROJECT_AUTOSAVE, DATASET_DIR, USE_LOCAL_DATASET, DATASET_SOURCE, _dataset
+    if not token:
+        raise ValueError("An HF token is required to open a project")
+    source, remote_project = ensure_project_bucket(bucket, token, allow_override=False)
+    if not remote_project:
+        raise ValueError(f"Bucket {project_bucket_id(bucket)} is not a project bucket")
+    sync_hf_directory(source, PROJECT_DIR, token)
+    manifest = read_project_manifest()
+    if not manifest or not validate_dataset_directory(PROJECT_DIR / "dataset"):
+        raise RuntimeError("Project bucket is missing project.json or dataset/")
+    PROJECT_SOURCE = source
+    PROJECT_TOKEN = token
+    metadata = manifest.get("project", {})
+    PROJECT_ID = metadata.get("id")
+    PROJECT_AUTOSAVE = bool(metadata.get("autosave", True))
+    DATASET_DIR = PROJECT_DIR / "dataset"
+    DATASET_SOURCE = str(local_dataset_annotation_path())
+    USE_LOCAL_DATASET = True
+    _dataset = None
+    return {"opened": True, "source": source, "project": manifest}
+
+
+def reset_project():
+    global PROJECT_SOURCE, PROJECT_TOKEN, PROJECT_AUTOSAVE, PROJECT_ID
+    PROJECT_SOURCE = ""
+    PROJECT_TOKEN = None
+    PROJECT_AUTOSAVE = True
+    PROJECT_ID = None
+    return {"reset": True}
+
+
+def update_project_save_job(job_id, **values):
+    with _jobs_lock:
+        _project_save_jobs[job_id].update(values)
+
+
+def run_project_save_job(job_id, document, autosave):
+    try:
+        with _project_save_lock:
+            update_project_save_job(job_id, status="running", started=time.monotonic())
+            result = save_project_document(document, autosave)
+        update_project_save_job(
+            job_id,
+            status="completed",
+            result=result,
+            elapsed_seconds=round(time.monotonic() - _project_save_jobs[job_id]["started"], 3),
+        )
+    except Exception as error:
+        update_project_save_job(job_id, status="error", error=str(error))
+
+
+def start_project_save_job(document, autosave=False):
+    job_id = uuid.uuid4().hex
+    with _jobs_lock:
+        _project_save_jobs[job_id] = {
+            "job_id": job_id,
+            "status": "queued",
+            "autosave": bool(autosave),
+            "queued_at": time.time(),
+        }
+    threading.Thread(target=run_project_save_job, args=(job_id, document, autosave), daemon=True).start()
+    return job_id
+
+
+def get_project_save_job(job_id):
+    with _jobs_lock:
+        job = _project_save_jobs.get(job_id)
+        return dict(job) if job else None
 
 
 def prepare_dataset(dataset_dir, remote_coco_url=None, remote_image_url=None, hf_source=None, hf_token=None, no_prompt=False):
@@ -1100,6 +1389,31 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urlparse(self.path).path
+        if path in {"/api/project/configure", "/api/project/save", "/api/project/reset", "/api/projects/list", "/api/project/open"}:
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if length > 50_000_000:
+                    raise ValueError("Project request is too large")
+                payload = json.loads(self.rfile.read(length) or b"{}")
+                if path == "/api/projects/list":
+                    result = {"projects": list_project_buckets(payload.get("token"), payload.get("namespace"))}
+                    self.send_json(result)
+                elif path == "/api/project/open":
+                    result = open_project(payload.get("bucket", ""), payload.get("token"))
+                    self.send_json(result)
+                elif path == "/api/project/reset":
+                    result = reset_project()
+                    self.send_json(result)
+                elif path == "/api/project/configure":
+                    result = configure_project(payload.get("bucket", ""), payload.get("token"), payload.get("autosave", True))
+                    self.send_json(result)
+                else:
+                    job_id = start_project_save_job(payload.get("project", payload), bool(payload.get("autosave", False)))
+                    self.send_json({"job_id": job_id})
+                return
+            except (OSError, RuntimeError, ValueError, TypeError, json.JSONDecodeError) as error:
+                self.send_error(HTTPStatus.BAD_REQUEST, str(error))
+            return
         if path == "/api/tools/island-frequency/start":
             self.send_json({"job_id": start_island_frequency_job(WORKERS)})
             return
@@ -1185,6 +1499,24 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = unquote(parsed.path)
         try:
+            if path == "/api/project/save/status":
+                job_id = parse_qs(parsed.query).get("job_id", [""])[0]
+                job = get_project_save_job(job_id)
+                if job is None:
+                    self.send_error(HTTPStatus.NOT_FOUND, "Project save job not found")
+                else:
+                    self.send_json(job, send_body)
+                return
+            if path == "/api/project/config":
+                self.send_json({"bucket": PROJECT_SOURCE, "token_configured": bool(PROJECT_TOKEN), "autosave": PROJECT_AUTOSAVE}, send_body)
+                return
+            if path == "/api/project":
+                document = read_project_manifest()
+                if document is None:
+                    self.send_error(HTTPStatus.NOT_FOUND, "No saved project")
+                else:
+                    self.send_json(document, send_body)
+                return
             if path == "/api/dataset":
                 data = load_dataset()
                 body = {
@@ -1194,6 +1526,8 @@ class Handler(BaseHTTPRequestHandler):
                     "images": data["summary"],
                     "annotation_count": len(data["annotations"]),
                     "max_annotation_id": max((annotation["id"] for annotation in data["annotations"]), default=0),
+                    "source": DATASET_SOURCE,
+                    "project_source": PROJECT_SOURCE,
                 }
                 self.send_json(body, send_body)
                 return
@@ -1368,9 +1702,14 @@ def build_parser():
     parser.add_argument("--coco-url", default=None, help="remote COCO instances JSON URL; overrides local dataset")
     parser.add_argument("--image-url", default=None, help="remote image URL template containing {filename}")
     parser.add_argument("--workers", type=int, default=WORKERS, help="Island Frequency workers; 0 uses all available CPUs")
-    parser.add_argument("--dataset-dir", default=os.environ.get("DATASET_DIR", str(DATASET_DIR)), help="local dataset directory")
-    parser.add_argument("--hf-source", default=os.environ.get("HF_DATASET_SOURCE", DEFAULT_HF_SOURCE), help="HF bucket path or hf://buckets URI")
-    parser.add_argument("--hf-token", default=None, help="optional Hugging Face token; prefer HF_TOKEN")
+    parser.add_argument("--dataset-dir", default=None, help="local dataset directory override")
+    parser.add_argument("--hf-source", default=os.environ.get("HF_DATASET_SOURCE", str(PROJECT_CONFIG.get("dataset_source", DEFAULT_HF_SOURCE))), help="dataset bucket path or hf://buckets URI")
+    parser.add_argument("--hf-token", default=None, help="optional Hugging Face dataset token; prefer HF_TOKEN")
+    parser.add_argument("--project-dir", default=os.environ.get("PROJECT_DIR"), help="local project workspace override")
+    parser.add_argument("--project-name", default=None, help="project name used under the app cache directory")
+    parser.add_argument("--project-bucket", default=None, help="project bucket ID to create or import")
+    parser.add_argument("--project-source", default=None, help="existing project bucket path to import")
+    parser.add_argument("--project-token", default=None, help="HF token for project bucket access; prefer HF_TOKEN")
     parser.add_argument("--no-prompt", action="store_true", help="do not prompt when the local dataset is missing")
     return parser
 
@@ -1387,14 +1726,26 @@ def main():
         parser.error("--image-url must contain {filename}")
     WORKERS = args.workers
     try:
-        prepare_dataset(
-            dataset_dir=args.dataset_dir,
-            remote_coco_url=args.coco_url or os.environ.get("COCO_URL"),
-            remote_image_url=args.image_url or os.environ.get("IMAGE_URL"),
-            hf_source=args.hf_source,
-            hf_token=args.hf_token,
-            no_prompt=args.no_prompt,
-        )
+        remote_coco_url = args.coco_url or os.environ.get("COCO_URL")
+        remote_image_url = args.image_url or os.environ.get("IMAGE_URL")
+        project_loaded = False
+        if not remote_coco_url and not remote_image_url:
+            project_loaded = prepare_project(
+                project_dir=args.project_dir,
+                project_name=args.project_name,
+                project_source=args.project_bucket or args.project_source,
+                project_token=args.project_token,
+                no_prompt=args.no_prompt,
+            )
+        if not project_loaded:
+            prepare_dataset(
+                dataset_dir=args.dataset_dir or str(PROJECT_DIR / "dataset"),
+                remote_coco_url=remote_coco_url,
+                remote_image_url=remote_image_url,
+                hf_source=args.hf_source,
+                hf_token=args.hf_token,
+                no_prompt=args.no_prompt,
+            )
         data = load_dataset()
     except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as error:
         parser.error(str(error))
