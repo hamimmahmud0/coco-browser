@@ -61,6 +61,9 @@ const state = {
   islandCleans: readStorage("coco-island-cleans", {}),
   appliedIslandCleans: readStorage("coco-applied-island-cleans", {}),
   islandCleanupResult: null,
+  instanceDeletions: readStorage("coco-instance-deletions", {}),
+  instanceDeleteResult: null,
+  activeInstanceDeleteJob: null,
 };
 
 const elements = {
@@ -186,6 +189,29 @@ const elements = {
   applyIslandCleanupCurrent: document.querySelector("#apply-island-cleanup-current"),
   applyIslandCleanupAll: document.querySelector("#apply-island-cleanup-all"),
   islandCleanupApplyStatus: document.querySelector("#island-cleanup-apply-status"),
+  instanceDeleteTool: document.querySelector("#instance-delete-tool"),
+  instanceDeleteModal: document.querySelector("#instance-delete-modal"),
+  closeInstanceDeleteModal: document.querySelector("#close-instance-delete-modal"),
+  instanceDeleteSetup: document.querySelector("#instance-delete-setup"),
+  instanceDeleteResults: document.querySelector("#instance-delete-results"),
+  instanceDeleteProgress: document.querySelector("#instance-delete-progress"),
+  instanceDeleteProgressBar: document.querySelector("#instance-delete-progress-bar"),
+  instanceDeleteProgressCount: document.querySelector("#instance-delete-progress-count"),
+  instanceDeleteStop: document.querySelector("#instance-delete-stop"),
+  instanceDeleteMinIslands: document.querySelector("#instance-delete-min-islands"),
+  instanceDeleteClassList: document.querySelector("#instance-delete-class-list"),
+  instanceDeleteClassesAll: document.querySelector("#instance-delete-classes-all"),
+  instanceDeleteClassesNone: document.querySelector("#instance-delete-classes-none"),
+  instanceDeleteSelection: document.querySelector("#instance-delete-selection"),
+  runInstanceDelete: document.querySelector("#run-instance-delete"),
+  copyInstanceDeleteResult: document.querySelector("#copy-instance-delete-result"),
+  recalculateInstanceDelete: document.querySelector("#recalculate-instance-delete"),
+  confirmInstanceDelete: document.querySelector("#confirm-instance-delete"),
+  applyInstanceDeleteCurrent: document.querySelector("#apply-instance-delete-current"),
+  applyInstanceDeleteAll: document.querySelector("#apply-instance-delete-all"),
+  instanceDeleteApplyStatus: document.querySelector("#instance-delete-apply-status"),
+  instanceDeleteSummary: document.querySelector("#instance-delete-summary"),
+  instanceDeleteTable: document.querySelector("#instance-delete-table"),
   islandSummary: document.querySelector("#island-summary"),
   frequencyChart: document.querySelector("#frequency-chart"),
   frequencyTotal: document.querySelector("#frequency-total"),
@@ -271,6 +297,10 @@ const toolRegistry = {
     label: "Island Cleanup",
     run: openIslandCleanup,
   },
+  instanceDelete: {
+    label: "Delete Multi-Island Instances",
+    run: openInstanceDelete,
+  },
 };
 
 function setRibbonCategory(category) {
@@ -299,6 +329,35 @@ const context = elements.overlay.getContext("2d");
 let toastTimer = null;
 let saveTimer = null;
 const inspectImageCache = new Map();
+const modalFocusTriggers = new Map();
+
+const FOCUSABLE_SELECTOR = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+function focusableIn(modal) {
+  return [...modal.querySelectorAll(FOCUSABLE_SELECTOR)].filter((node) => node.offsetParent !== null && !node.closest("[hidden]"));
+}
+
+function openModal(modal) {
+  if (!modal) return;
+  if (!modal.dataset.focusTrigger) modal.dataset.focusTrigger = document.activeElement?.id || "";
+  modalFocusTriggers.set(modal, document.activeElement);
+  modal.hidden = false;
+  const focusable = focusableIn(modal);
+  (focusable[0] || modal).focus?.();
+}
+
+function closeModal(modal) {
+  if (!modal) return;
+  modal.hidden = true;
+  const trigger = modalFocusTriggers.get(modal);
+  modalFocusTriggers.delete(modal);
+  if (trigger && document.contains(trigger)) trigger.focus();
+  else if (modal.dataset.focusTrigger) document.getElementById(modal.dataset.focusTrigger)?.focus();
+}
+
+function activeModal() {
+  return [...document.querySelectorAll(".modal")].find((modal) => !modal.hidden) || null;
+}
 
 function readStorage(key, fallback) {
   try {
@@ -319,6 +378,7 @@ function persist() {
       localStorage.setItem("coco-created", JSON.stringify(state.created));
       localStorage.setItem("coco-mask-edits", JSON.stringify(state.maskEdits));
       localStorage.setItem("coco-island-cleans", JSON.stringify(state.islandCleans));
+      localStorage.setItem("coco-instance-deletions", JSON.stringify(state.instanceDeletions));
       localStorage.setItem("coco-applied-island-cleans", JSON.stringify(state.appliedIslandCleans));
       elements.saveState.textContent = "Local edits enabled";
     } catch {
@@ -516,7 +576,7 @@ function openProjectModal() {
   elements.projectStatus.textContent = state.project.bucket
     ? `Bucket: ${state.project.bucket}${state.project.tokenConfigured ? " · token configured" : " · enter token to enable sync"}`
     : "Configure a Hugging Face project bucket to sync remotely";
-  elements.projectModal.hidden = false;
+  openModal(elements.projectModal);
 }
 
 async function startNewProject() {
@@ -541,6 +601,8 @@ async function startNewProject() {
   state.maskEdits = {};
   state.islandCleans = {};
   state.appliedIslandCleans = {};
+  state.instanceDeletions = {};
+  state.instanceDeleteResult = null;
   state.nextNewId = (state.dataset?.max_annotation_id || 0) + 1;
   state.selectedId = null;
   state.filter = "all";
@@ -564,11 +626,11 @@ async function startNewProject() {
 function openProjectBrowser() {
   elements.projectList.replaceChildren();
   elements.openProjectStatus.textContent = "";
-  elements.openProjectModal.hidden = false;
+  openModal(elements.openProjectModal);
 }
 
 function closeOpenProjectBrowser() {
-  elements.openProjectModal.hidden = true;
+  closeModal(elements.openProjectModal);
 }
 
 async function listAvailableProjects() {
@@ -631,12 +693,12 @@ async function openSelectedProject() {
 }
 
 function closeAccountsModal() {
-  elements.accountsModal.hidden = true;
+  closeModal(elements.accountsModal);
 }
 
 async function openAccountsManager() {
   elements.accountsStatus.textContent = "";
-  elements.accountsModal.hidden = false;
+  openModal(elements.accountsModal);
   await loadAccounts();
 }
 
@@ -672,12 +734,12 @@ async function createAccount() {
 }
 
 function closeAssignModal() {
-  elements.assignModal.hidden = true;
+  closeModal(elements.assignModal);
 }
 
 async function openAssignManager() {
   elements.assignStatus.textContent = "";
-  elements.assignModal.hidden = false;
+  openModal(elements.assignModal);
   try {
     const [accountsResponse, framesResponse] = await Promise.all([request("/api/accounts"), request("/api/project/frames")]);
     const accounts = (await accountsResponse.json()).users.filter((user) => user.active && user.role === "annotator");
@@ -716,7 +778,7 @@ async function assignSelectedFrames() {
 }
 
 function closeProjectModal() {
-  elements.projectModal.hidden = true;
+  closeModal(elements.projectModal);
 }
 
 function captureHistoryState() {
@@ -883,10 +945,36 @@ async function request(url, options = {}) {
   if (!["GET", "HEAD", "OPTIONS"].includes(method) && state.csrfToken) headers["X-CSRF-Token"] = state.csrfToken;
   const response = await fetch(url, { ...options, headers, credentials: "same-origin" });
   if (!response.ok) {
-    const message = await response.text();
-    throw new Error(message || `Request failed: ${response.status}`);
+    const body = await response.text();
+    const error = new Error(errorMessageFromBody(body, response.status));
+    error.status = response.status;
+    throw error;
   }
   return response;
+}
+
+function isMissingResult(error) {
+  return error?.status === 404 || /404|not found/i.test(String(error?.message || ""));
+}
+
+function errorMessageFromBody(body, status) {
+  const text = String(body || "").trim();
+  if (!text) return `Request failed: ${status}`;
+  if (text.startsWith("{") || text.startsWith("[")) {
+    try {
+      const payload = JSON.parse(text);
+      const message = payload?.error || payload?.message;
+      if (message) return String(message);
+    } catch (error) {
+      return text;
+    }
+  }
+  const match = text.match(/<p>Message:\s*([\s\S]*?)<\/p>/i) || text.match(/<title>([\s\S]*?)<\/title>/i);
+  if (match) {
+    const decoded = match[1].replace(/<[^>]*>/g, "").replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").trim();
+    if (decoded) return decoded;
+  }
+  return text.length > 300 ? `${text.slice(0, 300)}…` : text;
 }
 
 function wait(milliseconds) {
@@ -927,7 +1015,7 @@ async function runIslandFrequency(recalculate = false) {
       showToast("Loaded cached Island Frequency result");
       return;
     } catch (error) {
-      if (!error.message.includes("404")) throw error;
+      if (!isMissingResult(error)) throw error;
     }
   }
   const tool = toolRegistry.islandFrequency;
@@ -974,7 +1062,7 @@ async function openIslandCleanup() {
   elements.islandCleanupResults.hidden = true;
   elements.islandCleanupProgress.hidden = true;
   elements.islandCleanupStop.hidden = true;
-  elements.islandCleanupModal.hidden = false;
+  openModal(elements.islandCleanupModal);
   elements.islandCleanupEvidenceInputs.hidden = !elements.islandCleanupEvidenceEnabled.checked;
   state.islandCleanupResult = null;
   try {
@@ -986,7 +1074,7 @@ async function openIslandCleanup() {
     elements.islandCleanupResults.hidden = false;
     showToast("Loaded cached Island Cleanup result");
   } catch (error) {
-    if (!error.message.includes("404")) showToast(error.message);
+    if (!isMissingResult(error)) showToast(error.message);
   }
 }
 
@@ -1007,6 +1095,7 @@ function sameIslandCleanupParameters(first, second) {
 
 function renderIslandCleanupResults(result) {
   state.islandCleanupResult = result;
+  updateIslandCleanupApplyState();
   elements.islandCleanupSummary.replaceChildren();
   for (const [label, value] of [["Instances scanned", result.processed], ["Cleanup candidates", result.candidates.length], ["Dropped islands", result.candidates.reduce((total, candidate) => total + candidate.drop_indices.length, 0)], ["Minimum islands", result.parameters.min_islands], ["Largest / other threshold", `≥ ${result.parameters.min_largest_other_ratio}`]]) {
     const chip = element("div", "shape-result-chip");
@@ -1100,6 +1189,7 @@ async function confirmIslandCleanup() {
     for (const annotationId of Object.keys(state.islandCleans)) delete state.appliedIslandCleans[annotationId];
     persist();
     commitHistory("Confirm Island Cleanup", before);
+    updateIslandCleanupApplyState();
     showToast("Island Cleanup drops confirmed");
   } catch (error) {
     showToast(error.message);
@@ -1113,6 +1203,25 @@ function setIslandCleanupApplyBusy(busy, message = "") {
   elements.islandCleanupApplyStatus.classList.toggle("busy", busy);
 }
 
+function confirmedIslandCleanCount() {
+  return Object.keys(state.islandCleans || {}).length;
+}
+
+function updateIslandCleanupApplyState() {
+  if (!elements.applyIslandCleanupCurrent || !elements.applyIslandCleanupAll) return;
+  const confirmed = confirmedIslandCleanCount();
+  const disabled = confirmed === 0;
+  elements.applyIslandCleanupCurrent.disabled = disabled;
+  elements.applyIslandCleanupAll.disabled = disabled;
+  elements.applyIslandCleanupCurrent.title = disabled ? "Confirm drops before applying" : "Apply confirmed drops to the current image";
+  elements.applyIslandCleanupAll.title = disabled ? "Confirm drops before applying" : "Mark all confirmed drops as applied in the working project";
+  if (elements.islandCleanupApplyStatus && !elements.islandCleanupApplyStatus.classList.contains("busy")) {
+    elements.islandCleanupApplyStatus.textContent = confirmed
+      ? `${formatNumber(confirmed)} confirmed drop${confirmed === 1 ? "" : "s"} ready to apply`
+      : "No confirmed drops yet — run a dry run and choose Confirm drops";
+  }
+}
+
 async function applyIslandCleanup(scope) {
   const imageId = state.current?.id;
   if (!imageId) {
@@ -1120,6 +1229,13 @@ async function applyIslandCleanup(scope) {
     return;
   }
   const all = scope === "all";
+  const confirmed = confirmedIslandCleanCount();
+  if (!confirmed) {
+    const message = "No confirmed drops. Run a dry run and choose Confirm drops first.";
+    setIslandCleanupApplyBusy(false, message);
+    showToast(message);
+    return;
+  }
   setIslandCleanupApplyBusy(true, all ? "Applying all confirmed drops to the working project…" : "Applying confirmed drops to the current image…");
   await wait(50);
   const before = captureHistoryState();
@@ -1170,7 +1286,275 @@ function closeIslandCleanup() {
     elements.islandCleanupSetup.hidden = false;
     return;
   }
-  elements.islandCleanupModal.hidden = true;
+  closeModal(elements.islandCleanupModal);
+}
+
+function confirmedInstanceDeletionCount() {
+  return Object.keys(state.instanceDeletions || {}).length;
+}
+
+function updateInstanceDeleteApplyState() {
+  if (!elements.applyInstanceDeleteAll || !elements.applyInstanceDeleteCurrent) return;
+  const confirmed = confirmedInstanceDeletionCount();
+  const disabled = confirmed === 0;
+  elements.applyInstanceDeleteCurrent.disabled = disabled;
+  elements.applyInstanceDeleteAll.disabled = disabled;
+  elements.applyInstanceDeleteCurrent.title = disabled ? "Confirm deletions before applying" : "Delete confirmed instances in the current image";
+  elements.applyInstanceDeleteAll.title = disabled ? "Confirm deletions before applying" : "Delete all confirmed instances in the working project";
+  if (elements.instanceDeleteApplyStatus && !elements.instanceDeleteApplyStatus.classList.contains("busy")) {
+    elements.instanceDeleteApplyStatus.textContent = confirmed
+      ? `${formatNumber(confirmed)} confirmed deletion${confirmed === 1 ? "" : "s"} ready to apply`
+      : "No confirmed deletions yet — run a scan and choose Confirm deletions";
+  }
+}
+
+function setInstanceDeleteApplyBusy(busy, message = "") {
+  elements.applyInstanceDeleteCurrent.disabled = busy;
+  elements.applyInstanceDeleteAll.disabled = busy;
+  elements.instanceDeleteApplyStatus.textContent = message;
+  elements.instanceDeleteApplyStatus.classList.toggle("busy", busy);
+}
+
+function renderInstanceDeleteClasses() {
+  elements.instanceDeleteClassList.replaceChildren();
+  for (const category of state.dataset?.categories || []) {
+    const checked = upgradeToggleButton(element("button", "category-toggle toggle-button active"), true);
+    checked.dataset.classId = String(category.id);
+    checked.style.setProperty("--color", state.dataset.category_colors?.[category.id] || "#888");
+    checked.setAttribute("aria-label", `Include ${category.name} class`);
+    checked.addEventListener("change", () => {
+      renderInstanceDeleteSelection();
+    });
+    const dot = element("span", "object-color");
+    dot.style.background = state.dataset.category_colors?.[category.id] || "#888";
+    const row = element("div", "category-row");
+    row.append(checked, dot, element("span", "", category.name));
+    elements.instanceDeleteClassList.append(row);
+  }
+  renderInstanceDeleteSelection();
+}
+
+function selectedInstanceDeleteClassIds() {
+  return [...elements.instanceDeleteClassList.querySelectorAll(".category-toggle")]
+    .filter((button) => button.checked)
+    .map((button) => button.dataset.classId);
+}
+
+function renderInstanceDeleteSelection() {
+  const count = selectedInstanceDeleteClassIds().length;
+  const total = (state.dataset?.categories || []).length;
+  elements.instanceDeleteSelection.textContent = count === 0 ? "All classes" : count === total ? "All classes" : `${count} of ${total} classes`;
+}
+
+function instanceDeleteParameters() {
+  return {
+    min_islands: Math.max(2, Number(elements.instanceDeleteMinIslands.value) || 2),
+    class_ids: selectedInstanceDeleteClassIds(),
+  };
+}
+
+function renderInstanceDeleteResults(result) {
+  state.instanceDeleteResult = result;
+  updateInstanceDeleteApplyState();
+  elements.instanceDeleteSummary.replaceChildren();
+  const droppedArea = result.candidates.reduce((total, candidate) => total + (candidate.area || 0), 0);
+  for (const [label, value] of [
+    ["Instances scanned", result.processed],
+    ["Matching instances", result.candidates.length],
+    ["Already deleted", result.skipped_deleted || 0],
+    ["Island threshold", `> ${result.parameters.min_islands}`],
+    ["Total mask area", formatNumber(droppedArea)],
+  ]) {
+    const chip = element("div", "shape-result-chip");
+    chip.append(element("strong", "", String(value)), document.createTextNode(` ${label}`));
+    elements.instanceDeleteSummary.append(chip);
+  }
+  elements.instanceDeleteTable.replaceChildren();
+  const header = element("div", "excess-island-row header");
+  header.append(
+    element("span", "", "Annotation"),
+    element("span", "", "Image"),
+    element("span", "", "Class"),
+    element("span", "", "Islands"),
+    element("span", "", "Mask area"),
+  );
+  elements.instanceDeleteTable.append(header);
+  for (const candidate of result.candidates.slice(0, 5000)) {
+    const row = element("div", "excess-island-row");
+    row.append(
+      element("span", "", `#${candidate.annotation_id}`),
+      element("span", "", candidate.image_id),
+      element("span", "", categoryName(candidate.category_id)),
+      element("span", "", candidate.island_count),
+      element("span", "", formatNumber(candidate.area)),
+    );
+    elements.instanceDeleteTable.append(row);
+  }
+  if (result.candidates.length > 5000) {
+    elements.instanceDeleteTable.append(element("div", "object-empty", `Showing first 5,000 of ${formatNumber(result.candidates.length)} instances`));
+  }
+}
+
+async function openInstanceDelete() {
+  elements.instanceDeleteSetup.hidden = false;
+  elements.instanceDeleteResults.hidden = true;
+  elements.instanceDeleteProgress.hidden = true;
+  elements.instanceDeleteStop.hidden = true;
+  if (!elements.instanceDeleteClassList.children.length) renderInstanceDeleteClasses();
+  renderInstanceDeleteSelection();
+  updateInstanceDeleteApplyState();
+  openModal(elements.instanceDeleteModal);
+  try {
+    const response = await request("/api/tools/instance-delete/result");
+    const cached = (await response.json()).result;
+    if (state.instanceDeleteResult) return;
+    renderInstanceDeleteResults(cached);
+    elements.instanceDeleteSetup.hidden = true;
+    elements.instanceDeleteResults.hidden = false;
+    showToast("Loaded cached Delete Instances result");
+  } catch (error) {
+    if (!isMissingResult(error)) showToast(error.message);
+  }
+}
+
+function closeInstanceDelete() {
+  if (!elements.instanceDeleteResults.hidden) {
+    elements.instanceDeleteResults.hidden = true;
+    elements.instanceDeleteSetup.hidden = false;
+    return;
+  }
+  closeModal(elements.instanceDeleteModal);
+}
+
+async function runInstanceDelete(recalculate = false) {
+  if (state.activeInstanceDeleteJob) return;
+  const parameters = instanceDeleteParameters();
+  elements.runInstanceDelete.disabled = true;
+  elements.instanceDeleteProgress.hidden = false;
+  elements.instanceDeleteProgressBar.value = 0;
+  elements.instanceDeleteProgressCount.textContent = "Starting…";
+  elements.instanceDeleteStop.hidden = false;
+  try {
+    const response = await request("/api/tools/instance-delete/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(parameters),
+    });
+    const { job_id: jobId } = await response.json();
+    state.activeInstanceDeleteJob = jobId;
+    elements.stopToolTask.disabled = false;
+    elements.toolProgressLabel.textContent = toolRegistry.instanceDelete.label;
+    elements.toolProgressBar.value = 0;
+    elements.toolProgress.hidden = false;
+    while (state.activeInstanceDeleteJob === jobId) {
+      const statusResponse = await request(`/api/tools/instance-delete/status?job_id=${encodeURIComponent(jobId)}`);
+      const job = await statusResponse.json();
+      if (job.total) {
+        elements.instanceDeleteProgressBar.value = job.progress || 0;
+        elements.instanceDeleteProgressCount.textContent = `${formatNumber(job.processed || 0)} / ${formatNumber(job.total)}`;
+        elements.toolProgressBar.value = job.progress || 0;
+        elements.toolProgressCount.textContent = `${formatNumber(job.processed || 0)} / ${formatNumber(job.total)}`;
+      }
+      if (job.status === "completed") {
+        renderInstanceDeleteResults(job.result);
+        elements.instanceDeleteResults.hidden = false;
+        elements.instanceDeleteSetup.hidden = true;
+        elements.toolProgress.hidden = true;
+        showToast("Delete Instances scan complete");
+        break;
+      }
+      if (job.status === "cancelled") {
+        showToast("Delete Instances task stopped");
+        break;
+      }
+      if (job.status === "error") throw new Error(job.error || "Delete Instances scan failed");
+      await wait(600);
+    }
+  } catch (error) {
+    showToast(error.message);
+  } finally {
+    state.activeInstanceDeleteJob = null;
+    elements.instanceDeleteProgress.hidden = true;
+    elements.instanceDeleteStop.hidden = true;
+    elements.stopToolTask.disabled = true;
+    elements.toolProgress.hidden = true;
+    elements.runInstanceDelete.disabled = false;
+  }
+}
+
+async function confirmInstanceDelete() {
+  const result = state.instanceDeleteResult;
+  if (!result?.candidates?.length) {
+    showToast("Run a scan with matching instances first");
+    return;
+  }
+  if (!window.confirm(`Delete ${formatNumber(result.candidates.length)} instance${result.candidates.length === 1 ? "" : "s"} with more than ${result.parameters.min_islands} islands?`)) return;
+  try {
+    const response = await request("/api/tools/instance-delete/confirm", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ parameters: result.parameters, entries: result.candidates }),
+    });
+    const confirmed = await response.json();
+    state.instanceDeletions = confirmed.instance_deletions || state.instanceDeletions;
+    persist();
+    updateInstanceDeleteApplyState();
+    showToast("Instance deletions confirmed");
+  } catch (error) {
+    showToast(error.message);
+  }
+}
+
+async function applyInstanceDelete(scope) {
+  const all = scope === "all";
+  if (!confirmedInstanceDeletionCount()) {
+    const message = "No confirmed deletions. Run a scan and choose Confirm deletions first.";
+    setInstanceDeleteApplyBusy(false, message);
+    showToast(message);
+    return;
+  }
+  setInstanceDeleteApplyBusy(true, all ? "Deleting all confirmed instances…" : "Deleting confirmed instances in this image…");
+  await wait(50);
+  try {
+    const response = await request("/api/tools/instance-delete/apply", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ scope, image_id: state.current?.id ?? null }),
+    });
+    const result = await response.json();
+    state.instanceDeletions = result.instance_deletions || state.instanceDeletions;
+    persist();
+    const removedIds = new Set((result.annotations || []).map((annotation) => String(annotation.id)));
+    if (removedIds.size) {
+      for (const id of removedIds) {
+        delete state.appliedIslandCleans[id];
+        if (state.maskEdits?.[id]) delete state.maskEdits[id];
+      }
+      state.maskCache = null;
+      state.maskCacheKey = "";
+    }
+    refreshCurrentImageState();
+    renderObjects();
+    draw();
+    const message = all
+      ? `Deleted ${formatNumber(result.applied)} instances from the working project.`
+      : `Deleted ${formatNumber(result.applied)} instances in this image.`;
+    setInstanceDeleteApplyBusy(false, message);
+    showToast(message);
+  } catch (error) {
+    setInstanceDeleteApplyBusy(false, `Delete failed: ${error.message}`);
+    showToast(error.message);
+  }
+}
+
+async function copyInstanceDeleteResult() {
+  if (!state.instanceDeleteResult) return;
+  try {
+    await navigator.clipboard.writeText(JSON.stringify(state.instanceDeleteResult, null, 2));
+    showToast("Delete Instances result copied");
+  } catch (error) {
+    showToast(error.message);
+  }
 }
 
 const shapeDescriptorCatalog = [
@@ -1195,7 +1579,7 @@ async function openShapeDescriptorLab() {
   elements.shapeStopTask.disabled = true;
   elements.shapeSetup.hidden = false;
   elements.shapeResults.hidden = true;
-  elements.shapeModal.hidden = false;
+  openModal(elements.shapeModal);
   try {
     const response = await request("/api/tools/shape-descriptors/result");
     renderShapeResults((await response.json()).result);
@@ -1203,7 +1587,7 @@ async function openShapeDescriptorLab() {
     elements.shapeResults.hidden = false;
     showToast("Loaded cached Shape Descriptor result");
   } catch (error) {
-    if (!error.message.includes("404")) showToast(error.message);
+    if (!isMissingResult(error)) showToast(error.message);
   }
   document.querySelector(".tools-menu")?.removeAttribute("open");
 }
@@ -1213,7 +1597,7 @@ async function openExcessIslandFilter() {
   elements.excessIslandResults.hidden = true;
   elements.excessIslandProgress.hidden = true;
   elements.excessIslandStop.hidden = true;
-  elements.excessIslandModal.hidden = false;
+  openModal(elements.excessIslandModal);
   try {
     const response = await request("/api/tools/excess-islands/result");
     renderExcessIslandResults((await response.json()).result);
@@ -1221,7 +1605,7 @@ async function openExcessIslandFilter() {
     elements.excessIslandResults.hidden = false;
     showToast("Loaded cached Excess Island result");
   } catch (error) {
-    if (!error.message.includes("404")) showToast(error.message);
+    if (!isMissingResult(error)) showToast(error.message);
   }
   updateExcessIslandSelection();
   document.querySelector(".tools-menu")?.removeAttribute("open");
@@ -1257,7 +1641,7 @@ async function runExcessIslandFilter(recalculate = false) {
         return;
       }
     } catch (error) {
-      if (!error.message.includes("404")) throw error;
+      if (!isMissingResult(error)) throw error;
     }
   }
   elements.runExcessIslands.disabled = true;
@@ -1331,7 +1715,7 @@ function closeExcessIslandFilter() {
     elements.excessIslandSetup.hidden = false;
     return;
   }
-  elements.excessIslandModal.hidden = true;
+  closeModal(elements.excessIslandModal);
 }
 
 function closeShapeModal() {
@@ -1341,7 +1725,7 @@ function closeShapeModal() {
     elements.shapeRunProgress.hidden = true;
     return;
   }
-  elements.shapeModal.hidden = true;
+  closeModal(elements.shapeModal);
 }
 
 function renderShapeSetup() {
@@ -1404,7 +1788,7 @@ async function runShapeDescriptorLab(recalculate = false) {
         return;
       }
     } catch (error) {
-      if (!error.message.includes("404")) throw error;
+      if (!isMissingResult(error)) throw error;
     }
   }
   elements.runShapeDescriptors.disabled = true;
@@ -1621,7 +2005,7 @@ function renderIslandResults(result) {
   drawFrequencyChart(summary.distribution);
   renderCategoryFrequency(result.categories);
   renderInspectionOptions(result.inspection_groups || []);
-  elements.toolModal.hidden = false;
+  openModal(elements.toolModal);
 }
 
 function drawFrequencyChart(distribution) {
@@ -1731,7 +2115,7 @@ function openIslandInspector(islandCount, instances) {
   elements.inspectStage.hidden = true;
   elements.inspectSelection.replaceChildren();
   renderInspectObjectList();
-  elements.inspectModal.hidden = false;
+  openModal(elements.inspectModal);
   if (instances.length) selectInspectInstance(instances[0]);
 }
 
@@ -2213,7 +2597,13 @@ async function loadDataset() {
     const projectUi = await loadProjectDocument();
     if (state.currentUser?.role === "manager") {
       const collaborationResponse = await request("/api/project/collaboration");
-      if (collaborationResponse.ok) state.islandCleans = (await collaborationResponse.json()).island_cleans || {};
+      if (collaborationResponse.ok) {
+        const collaboration = await collaborationResponse.json();
+        state.islandCleans = collaboration.island_cleans || {};
+        state.instanceDeletions = collaboration.instance_deletions || {};
+      }
+      updateIslandCleanupApplyState();
+      updateInstanceDeleteApplyState();
     }
     applyFilter();
     const requested = projectUi?.current_image_id || Number(location.hash.slice(1));
@@ -2242,6 +2632,7 @@ function renderCategories() {
     const label = element("div", "category-row");
     const checkbox = upgradeToggleButton(element("button", "category-toggle toggle-button"), true);
     checkbox.style.setProperty("--color", color);
+    checkbox.setAttribute("aria-label", `Show ${category.name} category`);
     checkbox.addEventListener("change", () => {
       if (checkbox.checked) state.hiddenCategories.delete(category.id);
       else state.hiddenCategories.add(category.id);
@@ -3184,6 +3575,42 @@ elements.islandFrequencyTool.addEventListener("click", () => toolRegistry.island
 elements.shapeDescriptorTool.addEventListener("click", () => toolRegistry.shapeDescriptors.run());
 elements.excessIslandTool.addEventListener("click", () => toolRegistry.excessIslands.run());
 elements.islandCleanupTool.addEventListener("click", () => toolRegistry.islandCleanup.run());
+elements.instanceDeleteTool.addEventListener("click", () => toolRegistry.instanceDelete.run());
+elements.closeInstanceDeleteModal.addEventListener("click", closeInstanceDelete);
+elements.instanceDeleteModal.addEventListener("click", (event) => {
+  if (event.target === elements.instanceDeleteModal) closeInstanceDelete();
+});
+elements.runInstanceDelete.addEventListener("click", () => runInstanceDelete(true));
+elements.recalculateInstanceDelete.addEventListener("click", () => runInstanceDelete(true));
+elements.copyInstanceDeleteResult.addEventListener("click", copyInstanceDeleteResult);
+elements.confirmInstanceDelete.addEventListener("click", confirmInstanceDelete);
+elements.applyInstanceDeleteCurrent.addEventListener("click", () => applyInstanceDelete("current"));
+elements.applyInstanceDeleteAll.addEventListener("click", () => applyInstanceDelete("all"));
+elements.instanceDeleteClassesAll.addEventListener("click", () => {
+  elements.instanceDeleteClassList.querySelectorAll(".category-toggle").forEach((button) => {
+    button.checked = true;
+    button.classList.add("active");
+    button.setAttribute("aria-pressed", "true");
+  });
+  renderInstanceDeleteSelection();
+});
+elements.instanceDeleteClassesNone.addEventListener("click", () => {
+  elements.instanceDeleteClassList.querySelectorAll(".category-toggle").forEach((button) => {
+    button.checked = false;
+    button.classList.remove("active");
+    button.setAttribute("aria-pressed", "false");
+  });
+  renderInstanceDeleteSelection();
+});
+elements.instanceDeleteStop.addEventListener("click", async () => {
+  const jobId = state.activeInstanceDeleteJob;
+  if (!jobId) return;
+  await request("/api/tools/instance-delete/cancel", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ job_id: jobId }),
+  });
+});
 elements.recalculateIslandFrequency.addEventListener("click", () => runIslandFrequency(true));
 elements.copyShapeResult.addEventListener("click", copyShapeResult);
 elements.recalculateShapeDescriptors.addEventListener("click", () => runShapeDescriptorLab(true));
@@ -3260,10 +3687,10 @@ elements.inspectOverlay.addEventListener("pointermove", onInspectPointerMove);
 elements.inspectOverlay.addEventListener("pointerup", onInspectPointerUp);
 elements.inspectOverlay.addEventListener("pointercancel", onInspectPointerUp);
 elements.closeInspectModal.addEventListener("click", () => {
-  elements.inspectModal.hidden = true;
+  closeModal(elements.inspectModal);
 });
 elements.inspectModal.addEventListener("click", (event) => {
-  if (event.target === elements.inspectModal) elements.inspectModal.hidden = true;
+  if (event.target === elements.inspectModal) closeModal(elements.inspectModal);
 });
 elements.closeToolModal.addEventListener("click", () => {
   elements.toolModal.hidden = true;
@@ -3278,14 +3705,33 @@ elements.overlay.addEventListener("pointercancel", onPointerUp);
 new ResizeObserver(fitStage).observe(elements.canvasArea);
 
 document.addEventListener("keydown", (event) => {
-  if (["INPUT", "SELECT", "TEXTAREA"].includes(document.activeElement.tagName)) return;
+  const modal = activeModal();
+  if (modal && event.key === "Tab") {
+    const focusable = focusableIn(modal);
+    if (focusable.length) {
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      } else if (!modal.contains(document.activeElement)) {
+        event.preventDefault();
+        first.focus();
+      }
+    }
+    return;
+  }
+  if (["INPUT", "SELECT", "TEXTAREA"].includes(document.activeElement?.tagName)) return;
   if (event.code === "Space") {
     event.preventDefault();
     state.spaceDown = true;
     elements.overlay.style.cursor = "grab";
     return;
   }
-  const key = event.key.toLowerCase();
+  const key = typeof event.key === "string" ? event.key.toLowerCase() : "";
   if ((event.ctrlKey || event.metaKey) && key === "z") {
     event.preventDefault();
     if (event.shiftKey) redoHistory();
@@ -3336,17 +3782,21 @@ document.addEventListener("keydown", (event) => {
       closeIslandCleanup();
       return;
     }
+    if (!elements.instanceDeleteModal.hidden) {
+      closeInstanceDelete();
+      return;
+    }
     if (!elements.shapeModal.hidden) {
       closeShapeModal();
 
       return;
     }
     if (!elements.inspectModal.hidden) {
-      elements.inspectModal.hidden = true;
+      closeModal(elements.inspectModal);
       return;
     }
     if (!elements.toolModal.hidden) {
-      elements.toolModal.hidden = true;
+      closeModal(elements.toolModal);
       return;
     }
     state.selectedId = null;
@@ -3396,6 +3846,8 @@ function applyAuthenticatedUser(user, csrfToken) {
     state.maskEdits = {};
     state.islandCleans = {};
     state.appliedIslandCleans = {};
+    state.instanceDeletions = {};
+    state.instanceDeleteResult = null;
   } else {
     setRibbonCategory(state.ribbonCategory);
   }

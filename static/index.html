@@ -5,20 +5,20 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
   <title>COCO 1.0 Annotation Browser</title>
-  <link rel="stylesheet" href="/style.css?v=70">
+  <link rel="stylesheet" href="/style.css?v=75">
 </head>
 <body>
   <header class="topbar">
     <nav class="app-ribbon" aria-label="Application ribbon">
       <div class="brand" role="presentation">TRAVAT</div>
       <div class="ribbon-tabs" role="tablist" aria-label="Ribbon categories">
-        <button class="ribbon-tab active manager-only" type="button" role="tab" aria-selected="true" aria-controls="ribbon-project" data-ribbon-tab="project">Project</button>
-        <button class="ribbon-tab manager-only" type="button" role="tab" aria-selected="false" aria-controls="ribbon-dataset" data-ribbon-tab="dataset">Dataset</button>
+        <button class="ribbon-tab active manager-only" data-manager-only type="button" role="tab" aria-selected="true" aria-controls="ribbon-project" data-ribbon-tab="project">Project</button>
+        <button class="ribbon-tab manager-only" data-manager-only type="button" role="tab" aria-selected="false" aria-controls="ribbon-dataset" data-ribbon-tab="dataset">Dataset</button>
         <button class="ribbon-tab" type="button" role="tab" aria-selected="false" aria-controls="ribbon-edit" data-ribbon-tab="edit">Edit</button>
-        <button class="ribbon-tab manager-only" type="button" role="tab" aria-selected="false" aria-controls="ribbon-review" data-ribbon-tab="review">Review</button>
-        <button class="ribbon-tab manager-only" type="button" role="tab" aria-selected="false" aria-controls="ribbon-accounts" data-ribbon-tab="accounts">Accounts</button>
-        <button class="ribbon-tab manager-only" type="button" role="tab" aria-selected="false" aria-controls="ribbon-assign" data-ribbon-tab="assign">Assign</button>
-        <button class="ribbon-tab manager-only" type="button" role="tab" aria-selected="false" aria-controls="ribbon-analysis" data-ribbon-tab="analysis">Analysis</button>
+        <button class="ribbon-tab manager-only" data-manager-only type="button" role="tab" aria-selected="false" aria-controls="ribbon-review" data-ribbon-tab="review">Review</button>
+        <button class="ribbon-tab manager-only" data-manager-only type="button" role="tab" aria-selected="false" aria-controls="ribbon-accounts" data-ribbon-tab="accounts">Accounts</button>
+        <button class="ribbon-tab manager-only" data-manager-only type="button" role="tab" aria-selected="false" aria-controls="ribbon-assign" data-ribbon-tab="assign">Assign</button>
+        <button class="ribbon-tab manager-only" data-manager-only type="button" role="tab" aria-selected="false" aria-controls="ribbon-analysis" data-ribbon-tab="analysis">Analysis</button>
       </div>
       <div class="ribbon-panels">
         <div id="ribbon-project" class="ribbon-panel manager-only" role="tabpanel" data-ribbon-panel="project" data-manager-only>
@@ -67,6 +67,7 @@
             <button id="shape-descriptor-tool" class="ribbon-command large" type="button"><i data-lucide="scan-line"></i><span>Descriptors</span></button>
             <button id="excess-island-tool" class="ribbon-command large" type="button"><i data-lucide="list-filter"></i><span>Excess</span></button>
             <button id="island-cleanup-tool" class="ribbon-command large" type="button"><i data-lucide="eraser"></i><span>Cleanup</span></button>
+            <button id="instance-delete-tool" class="ribbon-command large" type="button"><i data-lucide="scissors"></i><span>Delete N+</span></button>
           </div>
         </div>
       </div>
@@ -80,17 +81,17 @@
   <main class="app-shell">
     <aside class="sidebar">
       <div class="search-wrap">
-        <input id="search" type="search" placeholder="Search images" autocomplete="off">
+        <input id="search" type="search" placeholder="Search images" aria-label="Search images" autocomplete="off">
         <span id="result-count" class="result-count"></span>
       </div>
       <div class="filter-row">
-        <button class="filter-button active" data-filter="all">All</button>
+        <button class="filter-button" data-filter="all">All</button>
         <button class="filter-button" data-filter="reviewed">Reviewed</button>
         <button class="filter-button" data-filter="flagged">Flagged</button>
-          <button class="filter-button" data-filter="empty">No objects</button>
-          <button class="filter-button" data-filter="waiting">Waiting</button>
-          <button class="filter-button" data-filter="annotated">Annotated</button>
-        <button class="filter-button" data-filter="annotation-reviewed">Annotation reviewed</button>
+        <button class="filter-button" data-filter="empty">No objects</button>
+        <button class="filter-button" data-filter="waiting">Waiting</button>
+        <button class="filter-button" data-filter="annotated">Annotated</button>
+        <button class="filter-button" data-filter="annotation-reviewed" title="Frames whose annotations were reviewed">Obj. reviewed</button>
       </div>
       <div class="list-heading">
         <span>Images</span>
@@ -124,7 +125,7 @@
           <button id="show-boxes" class="toggle toggle-button active" type="button" aria-pressed="true">Boxes</button>
           <button id="show-masks" class="toggle toggle-button active" type="button" aria-pressed="true">Masks</button>
           <button id="draw-mode" class="toggle toggle-button" type="button" aria-pressed="false">Draw bbox <kbd>B</kbd></button>
-          <select id="active-category" title="Active category"></select>
+          <select id="active-category" title="Active category" aria-label="Active category"></select>
           <button id="mark-annotated" class="button secondary" type="button" hidden>Mark annotated</button>
           <button id="mark-reviewed" class="button secondary" type="button" hidden>Mark reviewed</button>
         </div>
@@ -160,7 +161,7 @@
         </div>
         <div id="tool-progress" class="tool-progress" hidden>
           <strong id="tool-progress-label">Island Frequency</strong>
-          <progress id="tool-progress-bar" max="100" value="0"></progress>
+          <progress id="tool-progress-bar" max="100" value="0" aria-labelledby="tool-progress-label"></progress>
           <span id="tool-progress-count">0 / 0</span>
           <button id="stop-tool-task" class="button danger" type="button" disabled>Stop</button>
         </div>
@@ -219,7 +220,7 @@
         <label class="brush-size">Brush <input id="inspect-brush-size" type="range" min="2" max="80" value="12" disabled><span id="inspect-brush-value">12 px</span></label>
         <button id="inspect-mask-reset" class="button secondary" type="button" disabled>Reset mask</button>
         <button id="inspect-split-toggle" class="button secondary" type="button">Split instance</button>
-        <select id="inspect-split-category" title="Class for split instance" disabled></select>
+        <select id="inspect-split-category" title="Class for split instance" aria-label="Class for split instance" disabled></select>
         <button id="inspect-split-apply" class="button primary" type="button" disabled>Create split</button>
         <button id="inspect-delete-instance" class="button danger" type="button" disabled>Delete instance</button>
         <span id="inspect-edit-status" class="inspect-edit-status">Select an instance to edit its mask</span>
@@ -260,7 +261,7 @@
         <div class="shape-section-heading">
           <strong>Descriptor</strong>
         </div>
-        <select id="shape-descriptor-select" class="shape-descriptor-select"></select>
+        <select id="shape-descriptor-select" class="shape-descriptor-select" aria-label="Descriptor"></select>
         <div class="shape-section-heading">
           <strong>Classes</strong>
           <div><button id="shape-classes-all" class="button secondary" type="button">All</button><button id="shape-classes-none" class="button secondary" type="button">None</button></div>
@@ -270,7 +271,7 @@
           <span id="shape-selection-summary">No descriptor selected</span>
           <label class="shape-sample-control">Sample per class <input id="shape-sample-count" type="number" min="0" step="1" value="0" placeholder="0 = all"></label>
           <div id="shape-run-progress" class="shape-run-progress" hidden>
-            <progress id="shape-run-progress-bar" max="100" value="0"></progress>
+            <progress id="shape-run-progress-bar" max="100" value="0" aria-label="Shape Descriptor Lab progress"></progress>
             <span id="shape-run-progress-count">0 / 0</span>
           </div>
           <button id="run-shape-descriptors" class="button primary" type="button" disabled>Run selected descriptors</button>
@@ -283,8 +284,8 @@
         <div class="shape-detail-graph">
           <div class="shape-detail-controls">
             <strong>Distribution detail</strong>
-            <select id="shape-detail-class"></select>
-            <select id="shape-detail-descriptor"></select>
+            <select id="shape-detail-class" aria-label="Class for distribution detail"></select>
+            <select id="shape-detail-descriptor" aria-label="Descriptor for distribution detail"></select>
           </div>
           <canvas id="shape-detail-chart" width="1200" height="460"></canvas>
         </div>
@@ -307,8 +308,9 @@
         <div class="excess-range-inputs"><label>Minimum <input id="excess-min-islands" type="number" min="2" value="2"></label><label>Maximum <input id="excess-max-islands" type="number" min="2" value="100000"></label></div>
         <button id="excess-area-ratio-enabled" class="excess-filter-check toggle-button" type="button" aria-pressed="false"><span><strong>Maximum area ratio</strong><small>Flag islands at or below this ratio of the largest island</small></span></button>
         <div class="excess-range-inputs"><label>Maximum ratio <input id="excess-max-area-ratio" type="number" min="0.01" max="1" step="0.01" value="0.25"></label></div>
-        <div class="excess-run-row"><span id="excess-island-selection">Island range enabled</span><button id="run-excess-islands" class="button primary" type="button">Find excess islands</button><button id="excess-island-stop" class="button danger" type="button" hidden>Stop</button></div>
-        <div id="excess-island-progress" class="shape-run-progress" hidden><progress id="excess-island-progress-bar" max="100" value="0"></progress><span id="excess-island-progress-count">0 / 0</span></div>
+        <div id="excess-island-selection" class="island-cleanup-apply-status" role="status" aria-live="polite">Island range enabled</div>
+        <div class="excess-run-row"><button id="run-excess-islands" class="button primary" type="button">Find excess islands</button><button id="excess-island-stop" class="button danger" type="button" hidden>Stop</button></div>
+        <div id="excess-island-progress" class="shape-run-progress" hidden><progress id="excess-island-progress-bar" max="100" value="0" aria-label="Excess Island Filter progress"></progress><span id="excess-island-progress-count">0 / 0</span></div>
       </div>
       <div id="excess-island-results" class="excess-island-results" hidden>
         <div class="shape-results-toolbar"><span>Cached result</span><button id="recalculate-excess-islands" class="button secondary" type="button">Recalculate</button></div>
@@ -332,13 +334,39 @@
         <button id="island-cleanup-evidence-enabled" class="excess-filter-check toggle-button" type="button" aria-pressed="false"><span><strong>Same-image/class evidence</strong><small>Require similar single-island evidence in the same image and class</small></span></button>
         <div id="island-cleanup-evidence-inputs" class="excess-range-inputs" hidden><label>Sample count k <input id="island-cleanup-evidence-sample-count" type="number" min="1" value="2"></label><label>Relative tolerance a <input id="island-cleanup-evidence-tolerance" type="number" min="0" max="1" step="0.01" value="0.25"></label></div>
         <div class="excess-run-row"><span>Dry run only; no data changes occur until confirmation</span><button id="run-island-cleanup" class="button primary" type="button">Run dry run</button><button id="island-cleanup-stop" class="button danger" type="button" hidden>Stop</button></div>
-        <div id="island-cleanup-progress" class="shape-run-progress" hidden><progress id="island-cleanup-progress-bar" max="100" value="0"></progress><span id="island-cleanup-progress-count">0 / 0</span></div>
+        <div id="island-cleanup-progress" class="shape-run-progress" hidden><progress id="island-cleanup-progress-bar" max="100" value="0" aria-label="Island Cleanup progress"></progress><span id="island-cleanup-progress-count">0 / 0</span></div>
       </div>
       <div id="island-cleanup-results" class="excess-island-results" hidden>
         <div class="shape-results-toolbar"><span>Cached dry-run result</span><div class="shape-result-actions"><button id="copy-island-cleanup-result" class="button secondary" type="button">Copy result</button><button id="recalculate-island-cleanup" class="button secondary" type="button">Recalculate</button><button id="confirm-island-cleanup" class="button primary" type="button">Confirm drops</button><button id="apply-island-cleanup-current" class="button secondary" type="button">Apply current image</button><button id="apply-island-cleanup-all" class="button secondary" type="button">Apply all confirmed</button></div></div>
         <div id="island-cleanup-apply-status" class="island-cleanup-apply-status" role="status" aria-live="polite"></div>
         <div id="island-cleanup-summary" class="shape-result-summary"></div>
         <div id="island-cleanup-table"></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="instance-delete-modal" class="modal excess-island-modal" role="dialog" aria-modal="true" aria-labelledby="instance-delete-title" hidden>
+    <div class="modal-card excess-island-card">
+      <div class="modal-header">
+        <div>
+          <h2 id="instance-delete-title">Delete Multi-Island Instances</h2>
+          <p>Delete whole instances whose mask has more than N islands</p>
+        </div>
+        <button id="close-instance-delete-modal" class="icon-button" type="button" title="Close">×</button>
+      </div>
+      <div id="instance-delete-setup" class="excess-island-setup">
+        <div class="excess-range-inputs"><label>Delete instances with more than N islands<input id="instance-delete-min-islands" type="number" min="2" value="2"></label></div>
+        <div class="shape-section-heading"><strong>Classes</strong><div><button id="instance-delete-classes-all" class="button secondary" type="button">All</button><button id="instance-delete-classes-none" class="button secondary" type="button">None</button></div></div>
+        <div id="instance-delete-class-list" class="shape-check-grid shape-class-grid"></div>
+        <div class="excess-run-row"><div id="instance-delete-selection" class="island-cleanup-apply-status" role="status" aria-live="polite">All classes</div><button id="run-instance-delete" class="button primary" type="button">Find instances</button><button id="instance-delete-stop" class="button danger" type="button" hidden>Stop</button></div>
+        <div id="instance-delete-progress" class="shape-run-progress" hidden><progress id="instance-delete-progress-bar" max="100" value="0" aria-label="Delete Instances progress"></progress><span id="instance-delete-progress-count">0 / 0</span></div>
+      </div>
+      <div id="instance-delete-results" class="excess-island-results" hidden>
+        <div class="shape-results-toolbar"><span>Cached dry-run result</span><div class="shape-result-actions"><button id="copy-instance-delete-result" class="button secondary" type="button">Copy result</button><button id="recalculate-instance-delete" class="button secondary" type="button">Recalculate</button><button id="confirm-instance-delete" class="button primary" type="button">Confirm deletions</button><button id="apply-instance-delete-current" class="button secondary" type="button">Delete in current image</button><button id="apply-instance-delete-all" class="button secondary" type="button">Delete all confirmed</button></div></div>
+        <div id="instance-delete-apply-status" class="island-cleanup-apply-status" role="status" aria-live="polite"></div>
+        <div class="excess-run-row"><span>Deleted instances are omitted from exports and excluded from analysis tools</span></div>
+        <div id="instance-delete-summary" class="shape-result-summary"></div>
+        <div id="instance-delete-table"></div>
       </div>
     </div>
   </div>
@@ -438,6 +466,6 @@
 
   <div id="toast" class="toast" role="status"></div>
   <script src="https://unpkg.com/lucide@0.547.0/dist/umd/lucide.js"></script>
-  <script src="/app.js?v=70"></script>
+  <script src="/app.js?v=75"></script>
 </body>
 </html>

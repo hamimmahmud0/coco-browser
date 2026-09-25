@@ -29,6 +29,7 @@ The default dataset is:
 - Runs background dataset tools with live status-bar progress.
 - Includes the **Island Frequency** tool for connected-component analysis across all instances.
 - Includes a manager-only **Island Cleanup** tool with dry-run analysis, explicit confirmation, and cached results.
+- Includes a manager-only **Delete Multi-Island Instances** tool that removes instances above an island-count threshold.
 - Includes snapshot-based undo/redo and a Photoshop-style history selector.
 
 ## Requirements
@@ -152,7 +153,7 @@ Command-line arguments override environment defaults.
 
 ## Island Frequency Tool
 
-Open **Tools** in the header and select **Island Frequency**.
+Open **Analysis** in the header and select **Frequency**.
 
 The tool analyzes every detection instance in the currently configured COCO dataset. For each instance it:
 
@@ -185,7 +186,7 @@ The inspector's **Edit mask** mode supports add/erase brush strokes and a brush-
 
 ## Shape Descriptor Lab
 
-Open **Tools → Shape Descriptor Lab**. The tool does not calculate every descriptor on launch. Select a subgroup of descriptors and classes, then run only that measurement.
+Open **Analysis → Descriptors**. The tool does not calculate every descriptor on launch. Select a subgroup of descriptors and classes, then run only that measurement.
 
 Available descriptors:
 
@@ -205,7 +206,7 @@ The first nine descriptors are calculated from the instance mask. Hausdorff and 
 
 ## Excess Island Filter
 
-Open **Tools → Excess Island Filter**. Enable at least one filter:
+Open **Analysis → Excess**. Enable at least one filter:
 
 - Island count range
 - Maximum island area ratio relative to the largest island
@@ -219,6 +220,12 @@ The tool scans all instances, reports multi-island candidates, and shows candida
 Open **Analysis → Cleanup**. Set the minimum island count `N` and minimum largest-to-other area ratio threshold `T`; instances qualify when the ratio is greater than or equal to `T`. Optionally require `k` random similar single-island annotations from the same image and class with relative tolerance `a`. The first run is always a dry run and does not modify dataset or project data. Review the cached result, use **Copy result** or **Recalculate**, then explicitly choose **Confirm drops** to store validated island indices in project collaboration state. The modal and all cleanup API routes are manager-only and can be cancelled while running.
 
 Confirmed drops are applied during export before existing mask brush strokes. The exporter recomputes mask area and bounding boxes, omits annotations whose masks are fully removed, and preserves the cleanup state in browser and project history. The `island_cleans` collaboration record is synchronized with project data when project sync is enabled. **Apply current image** materializes cleaned masks in the active working view; **Apply all confirmed** records all confirmed drops as applied in the working project and refreshes the current image. Neither option rewrites the source dataset.
+
+## Delete Multi-Island Instances
+
+Open **Analysis → Delete N+**. Set the island threshold `N`; every instance whose mask has more than `N` connected components is a candidate. Restrict the scan to specific classes with the class toggles, where an empty selection means all classes. The first run is a dry run and does not modify dataset or project data. Use **Confirm deletions** to store the matched annotation IDs in the `instance_deletions` collaboration record, then **Delete in current image** or **Delete all confirmed** to mark them applied.
+
+Island counts respect confirmed and applied cleanup drops, so the tool agrees with **Frequency** on the current working project. Deleting an instance is irreversible in the working project: re-running the scan skips already deleted annotations, so the tool is idempotent. Applied deletions are omitted from exports and excluded from Frequency, Excess, Cleanup, and Shape Descriptor analysis. Source annotations are never rewritten. The modal and all delete API routes are manager-only and can be cancelled while running.
 
 ## Editing Model
 
@@ -294,6 +301,12 @@ Authentication is required for all application APIs. The first startup creates a
 | `POST` | `/api/tools/island-cleanup/confirm` | Validate and store confirmed island drops |
 | `POST` | `/api/tools/island-cleanup/apply` | Apply confirmed drops to the current image or working project |
 | `POST` | `/api/tools/island-cleanup/cancel` | Cancel an Island Cleanup job |
+| `POST` | `/api/tools/instance-delete/start` | Start a Delete Multi-Island Instances scan |
+| `GET` | `/api/tools/instance-delete/status?job_id={id}` | Poll Delete Instances progress and results |
+| `GET` | `/api/tools/instance-delete/result` | Get the latest cached Delete Instances scan |
+| `POST` | `/api/tools/instance-delete/confirm` | Validate and store confirmed instance deletions |
+| `POST` | `/api/tools/instance-delete/apply` | Mark confirmed deletions as applied |
+| `POST` | `/api/tools/instance-delete/cancel` | Cancel a Delete Instances scan |
 
 The complete COCO source is downloaded and indexed once on the first dataset request, then kept in server memory for the lifetime of the process.
 
@@ -342,4 +355,3 @@ python server.py --port 8889
 ### Browser shows an older interface
 
 Perform a hard refresh. The HTML references versioned CSS and JavaScript assets to avoid stale browser caches.
-# coco-browser

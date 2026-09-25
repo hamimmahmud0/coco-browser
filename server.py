@@ -74,6 +74,7 @@ _jobs = {}
 _shape_jobs = {}
 _cleanup_jobs = {}
 _island_cleanup_jobs = {}
+_instance_delete_jobs = {}
 _project_save_jobs = {}
 _project_save_lock = threading.Lock()
 _collaboration_lock = threading.Lock()
@@ -244,7 +245,8 @@ def prepare_project(project_dir=None, project_name=None, project_source=None, pr
             if no_prompt or not sys.stdin.isatty():
                 prepare_local_project_dataset(PROJECT_TOKEN)
             else:
-                raise RuntimeError("A project bucket is required on first run")
+                print(f"No existing project; creating a new project in {PROJECT_DIR} and importing dataset...", flush=True)
+                prepare_local_project_dataset(PROJECT_TOKEN)
         elif not validate_dataset_directory(DATASET_DIR):
             prepare_local_project_dataset(PROJECT_TOKEN)
     manifest = read_project_manifest() or {}
@@ -564,6 +566,8 @@ SHAPE_DESCRIPTORS = {
     "chamfer_distance": "Chamfer distance",
 }
 _shape_references = {}
+_deleted_indices = set()
+_clean_indices = {}
 
 
 def mask_array(segmentation):
@@ -1099,6 +1103,8 @@ def count_island_range(bounds, clean_indices=None):
     categories = {}
     instances = {}
     for index in range(start, end):
+        if index in _deleted_indices:
+            continue
         annotation = data["annotations"][index]
         segmentation = annotation.get("segmentation")
         if index in clean_indices:
@@ -1134,6 +1140,7 @@ def run_island_frequency(job_id, workers):
     started = time.monotonic()
     try:
         data = load_dataset()
+        refresh_deleted_indices(data)
         annotations = data["annotations"]
         applied_clean_indices = working_project_clean_indices(data)
         total = len(annotations)
@@ -1298,6 +1305,8 @@ def shape_range(arguments):
     class_values = {}
     skipped = 0
     for index in indices:
+        if index in _deleted_indices:
+            continue
         annotation = data["annotations"][index]
         category_id = str(annotation.get("category_id"))
         values = shape_values(annotation, descriptors, _shape_references.get(category_id))
@@ -1315,6 +1324,7 @@ def run_shape_descriptors(job_id, descriptors, class_ids, sample_count, workers)
     started = time.monotonic()
     try:
         data = load_dataset()
+        refresh_deleted_indices(data)
         selected_indices_by_class = {}
         for index, annotation in enumerate(data["annotations"]):
             category_id = str(annotation.get("category_id"))
@@ -1330,7 +1340,6 @@ def run_shape_descriptors(job_id, descriptors, class_ids, sample_count, workers)
         selected = [data["annotations"][index] for index in selected_indices]
         total = len(selected_indices)
         worker_count = max(1, min(available_cpu_count(), workers or available_cpu_count(), total or 1))
-        _shape_references = {}
         if "hausdorff_distance" in descriptors or "chamfer_distance" in descriptors:
             for category in data["categories"]:
                 category_id = str(category["id"])
@@ -1433,6 +1442,8 @@ def cleanup_range(arguments):
     data = _dataset or load_dataset()
     candidates = []
     for index in indices:
+        if index in _deleted_indices:
+            continue
         annotation = data["annotations"][index]
         areas = mask_component_areas(annotation.get("segmentation"))
         island_count = len(areas)
@@ -1528,6 +1539,8 @@ def island_cleanup_range(arguments):
     data = _dataset or load_dataset()
     candidates = []
     for index in range(start, end):
+        if index in _deleted_indices:
+            continue
         annotation = data["annotations"][index]
         areas = mask_component_areas(annotation.get("segmentation"))
         candidate = cleanup_candidate(annotation, areas, evidence, parameters)
@@ -1545,6 +1558,7 @@ def run_island_cleanup_job(job_id, parameters):
     started = time.monotonic()
     try:
         data = load_dataset()
+        refresh_deleted_indices(data)
         total = len(data["annotations"])
         evidence = island_cleanup_evidence(data) if parameters["evidence_enabled"] else {}
         cancel_event = _job_cancel_events.setdefault(job_id, threading.Event())
@@ -1647,7 +1661,7 @@ def apply_island_cleans(user, payload):
     collaboration = read_collaboration()
     cleans = collaboration.get("island_cleans", {})
     if not isinstance(cleans, dict) or not cleans:
-        raise ValueError("No confirmed Island Cleanup entries to apply")
+        raise ValueError("No confirmed Island Cleanup entries to apply; run a dry run and confirm drops first")
     now = time.time()
     applied = 0
     cleaned_annotations = []
@@ -1687,6 +1701,247 @@ def apply_island_cleans(user, payload):
     return {"applied": applied, "scope": scope, "annotations": cleaned_annotations, "island_cleans": collaboration["island_cleans"], "revision": collaboration["revision"]}
 
 
+def instance_delete_parameters(payload):
+    try:
+        parameters = {
+            "min_islands": int(payload.get("min_islands", 2)),
+            "class_ids": sorted({str(value) for value in payload.get("class_ids", []) if str(value) != ""}),
+            "apply_scope": str(payload.get("apply_scope", "all")),
+        }
+    except (TypeError, ValueError) as error:
+        raise ValueError("Invalid Delete Instances parameters") from error
+    if parameters["min_islands"] < 2:
+        raise ValueError("Minimum island count must be at least 2")
+    if parameters["apply_scope"] not in {"all", "current"}:
+        raise ValueError("Apply scope must be current or all")
+    return parameters
+
+
+def deleted_instance_indices(data):
+    global _deleted_indices
+    collaboration = read_collaboration()
+    deletions = collaboration.get("instance_deletions", {})
+    if not isinstance(deletions, dict):
+        _deleted_indices = set()
+        return _deleted_indices
+    deleted = set()
+    for index, annotation in enumerate(data["annotations"]):
+        record = deletions.get(str(annotation.get("id")))
+        if isinstance(record, dict) and record.get("applied"):
+            deleted.add(index)
+    _deleted_indices = deleted
+    return deleted
+
+
+def refresh_deleted_indices(data):
+    """Refresh the fork-visible snapshot of applied deletions for worker processes."""
+    return deleted_instance_indices(data)
+
+
+def instance_delete_range(arguments):
+    indices, parameters = arguments
+    data = _dataset or load_dataset()
+    class_ids = set(parameters["class_ids"])
+    candidates = []
+    for index in indices:
+        if index in _deleted_indices:
+            continue
+        annotation = data["annotations"][index]
+        if class_ids and str(annotation.get("category_id")) not in class_ids:
+            continue
+        segmentation = annotation.get("segmentation")
+        if index in _clean_indices:
+            segmentation = apply_mask_drops(segmentation, _clean_indices[index])
+            if segmentation is None:
+                continue
+        areas = mask_component_areas(segmentation)
+        island_count = len(areas)
+        if island_count <= parameters["min_islands"]:
+            continue
+        candidates.append({
+            "annotation_id": annotation["id"],
+            "image_id": annotation["image_id"],
+            "category_id": annotation.get("category_id"),
+            "island_count": island_count,
+            "area": sum(areas),
+            "largest_area": max(areas),
+        })
+    return candidates, len(indices)
+
+
+def update_instance_delete_job(job_id, **values):
+    with _jobs_lock:
+        _instance_delete_jobs[job_id].update(values)
+
+
+def run_instance_delete_job(job_id, parameters, workers):
+    global _clean_indices
+    started = time.monotonic()
+    try:
+        data = load_dataset()
+        indices = list(range(len(data["annotations"])))
+        total = len(indices)
+        deleted = deleted_instance_indices(data)
+        _clean_indices = working_project_clean_indices(data)
+        cancel_event = _job_cancel_events.setdefault(job_id, threading.Event())
+        update_instance_delete_job(job_id, status="running", total=total, processed=0, progress=0, workers=workers, available_cpus=available_cpu_count())
+        candidates = []
+        processed = 0
+        pool = get_context("fork").Pool(processes=workers)
+        try:
+            pending_jobs = [
+                pool.apply_async(instance_delete_range, ((block, parameters),))
+                for block in [indices[start : start + 250] for start in range(0, total, 250)]
+            ]
+            while pending_jobs:
+                for pending in list(pending_jobs):
+                    if not pending.ready():
+                        continue
+                    result, count = pending.get()
+                    candidates.extend(result)
+                    processed += count
+                    pending_jobs.remove(pending)
+                    update_instance_delete_job(job_id, processed=processed, progress=round(processed * 100 / total, 3) if total else 100, elapsed_seconds=round(time.monotonic() - started, 3))
+                if pending_jobs and cancel_event.wait(0.05):
+                    update_instance_delete_job(job_id, status="cancelled", elapsed_seconds=round(time.monotonic() - started, 3))
+                    return
+        finally:
+            pool.terminate()
+            pool.join()
+        result = {
+            "parameters": parameters,
+            "candidates": sorted(candidates, key=lambda item: item["annotation_id"]),
+            "processed": total,
+            "skipped_deleted": len(deleted),
+            "elapsed_seconds": round(time.monotonic() - started, 3),
+            "workers": workers,
+        }
+        cache_analysis_result("instance-delete", parameters, result)
+        update_instance_delete_job(job_id, status="completed", processed=total, progress=100, result=result)
+    except Exception as error:
+        if _job_cancel_events.get(job_id) and _job_cancel_events[job_id].is_set():
+            update_instance_delete_job(job_id, status="cancelled", elapsed_seconds=round(time.monotonic() - started, 3))
+        else:
+            update_instance_delete_job(job_id, status="error", error=str(error), elapsed_seconds=round(time.monotonic() - started, 3))
+
+
+def start_instance_delete_job(payload):
+    parameters = instance_delete_parameters(payload)
+    workers = max(1, min(available_cpu_count(), WORKERS or available_cpu_count()))
+    with _jobs_lock:
+        for job in _instance_delete_jobs.values():
+            if job["status"] in {"queued", "running"}:
+                return job["id"]
+        job_id = uuid.uuid4().hex
+        _job_cancel_events[job_id] = threading.Event()
+        _instance_delete_jobs[job_id] = {"id": job_id, "status": "queued", "processed": 0, "total": 0, "progress": 0, "created_at": time.time(), "parameters": parameters}
+    threading.Thread(target=run_instance_delete_job, args=(job_id, parameters, workers), daemon=True).start()
+    return job_id
+
+
+def get_instance_delete_job(job_id):
+    with _jobs_lock:
+        job = _instance_delete_jobs.get(job_id)
+        return dict(job) if job else None
+
+
+def confirm_instance_deletions(user, payload):
+    parameters = instance_delete_parameters(payload.get("parameters", {}))
+    entries = payload.get("entries", payload.get("candidates", []))
+    if not isinstance(entries, list):
+        raise ValueError("Delete Instances entries must be a list")
+    if not entries:
+        raise ValueError("Delete Instances confirmation requires at least one entry")
+    data = load_dataset()
+    annotations = {annotation["id"]: annotation for annotation in data["annotations"]}
+    clean_indices = working_project_clean_indices(data)
+    index_by_id = {annotation["id"]: index for index, annotation in enumerate(data["annotations"])}
+    class_ids = set(parameters["class_ids"])
+    validated = {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise ValueError("Invalid Delete Instances entry")
+        annotation = annotations.get(entry.get("annotation_id"))
+        if annotation is None:
+            raise ValueError(f"Unknown annotation ID: {entry.get('annotation_id')}")
+        if class_ids and str(annotation.get("category_id")) not in class_ids:
+            raise ValueError(f"Annotation {annotation['id']} is outside the selected classes")
+        segmentation = annotation.get("segmentation")
+        index = index_by_id.get(annotation["id"])
+        if index is not None and index in clean_indices:
+            segmentation = apply_mask_drops(segmentation, clean_indices[index])
+        areas = mask_component_areas(segmentation)
+        island_count = len(areas)
+        if island_count <= parameters["min_islands"]:
+            raise ValueError(f"Annotation {annotation['id']} no longer has more than {parameters['min_islands']} islands")
+        validated[str(annotation["id"])] = {
+            "annotation_id": annotation["id"],
+            "image_id": annotation.get("image_id"),
+            "category_id": annotation.get("category_id"),
+            "island_count": island_count,
+            "area": sum(areas),
+            "parameters": parameters,
+            "confirmed_at": time.time(),
+            "confirmed_by": user["user_id"],
+        }
+    collaboration = read_collaboration()
+    collaboration.setdefault("instance_deletions", {}).update(validated)
+    collaboration["revision"] = int(collaboration.get("revision", 0)) + 1
+    write_collaboration(collaboration)
+    return {"confirmed": len(validated), "instance_deletions": collaboration["instance_deletions"], "revision": collaboration["revision"]}
+
+
+def apply_instance_deletions(user, payload):
+    scope = payload.get("scope", "all")
+    if scope not in {"current", "all"}:
+        raise ValueError("Delete Instances apply scope must be current or all")
+    try:
+        image_id = int(payload["image_id"]) if payload.get("image_id") is not None else None
+    except (TypeError, ValueError) as error:
+        raise ValueError("Invalid Delete Instances image ID") from error
+    if image_id is None and scope == "current":
+        raise ValueError("Delete Instances apply requires an image ID")
+    data = load_dataset()
+    annotations = {annotation["id"]: annotation for annotation in data["annotations"]}
+    collaboration = read_collaboration()
+    deletions = collaboration.get("instance_deletions", {})
+    if not isinstance(deletions, dict) or not deletions:
+        raise ValueError("No confirmed Delete Instances entries to apply; run a dry run and confirm deletions first")
+    now = time.time()
+    applied = 0
+    removed_annotations = []
+    for key, record in deletions.items():
+        if not isinstance(record, dict):
+            continue
+        annotation = annotations.get(record.get("annotation_id"))
+        if annotation is None:
+            continue
+        if scope == "current" and annotation.get("image_id") != image_id:
+            continue
+        record["applied"] = True
+        record["applied_at"] = now
+        record["applied_by"] = user["user_id"]
+        record["apply_scope"] = scope
+        applied += 1
+        removed_annotations.append({
+            "id": annotation["id"],
+            "image_id": annotation.get("image_id"),
+            "category_id": annotation.get("category_id"),
+            "island_count": record.get("island_count"),
+        })
+    if not applied:
+        raise ValueError("No confirmed Delete Instances entries match the current image")
+    collaboration["revision"] = int(collaboration.get("revision", 0)) + 1
+    write_collaboration(collaboration)
+    return {
+        "applied": applied,
+        "scope": scope,
+        "annotations": removed_annotations,
+        "instance_deletions": collaboration["instance_deletions"],
+        "revision": collaboration["revision"],
+    }
+
+
 def update_cleanup_job(job_id, **values):
     with _jobs_lock:
         _cleanup_jobs[job_id].update(values)
@@ -1696,6 +1951,7 @@ def run_excess_island_job(job_id, filters):
     started = time.monotonic()
     try:
         data = load_dataset()
+        refresh_deleted_indices(data)
         indices = list(range(len(data["annotations"])))
         total = len(indices)
         cancel_event = _job_cancel_events.setdefault(job_id, threading.Event())
@@ -1859,10 +2115,11 @@ def read_collaboration():
     except (OSError, json.JSONDecodeError):
         data = None
     if not isinstance(data, dict) or not isinstance(data.get("frames"), dict):
-        data = {"revision": 1, "frames": {}, "workspaces": {}, "accounts": {}, "island_cleans": {}}
+        data = {"revision": 1, "frames": {}, "workspaces": {}, "accounts": {}, "island_cleans": {}, "instance_deletions": {}}
     data.setdefault("workspaces", {})
     data.setdefault("accounts", {})
     data.setdefault("island_cleans", {})
+    data.setdefault("instance_deletions", {})
     for image in load_dataset()["images"]:
         data["frames"].setdefault(str(image["id"]), {"state": "waiting", "assigned_to": None, "updated_at": time.time()})
     return data
@@ -2035,7 +2292,7 @@ class Handler(BaseHTTPRequestHandler):
                 AUTH_STORE.delete_session(user["token_hash"])
             self.send_bytes(b'{"logged_out":true}', "application/json; charset=utf-8", {"Set-Cookie": "session_id=; Max-Age=0; HttpOnly; SameSite=Lax; Path=/"})
             return
-        manager_paths = {"/api/project/configure", "/api/project/save", "/api/project/reset", "/api/projects/list", "/api/project/open", "/api/accounts", "/api/accounts/update", "/api/project/assign", "/api/tools/island-frequency/start", "/api/tools/excess-islands/start", "/api/tools/shape-descriptors/start", "/api/tools/island-cleanup/start", "/api/tools/island-cleanup/confirm", "/api/tools/island-cleanup/apply", "/api/tools/island-frequency/cancel", "/api/tools/excess-islands/cancel", "/api/tools/shape-descriptors/cancel", "/api/tools/island-cleanup/cancel", "/api/export"}
+        manager_paths = {"/api/project/configure", "/api/project/save", "/api/project/reset", "/api/projects/list", "/api/project/open", "/api/accounts", "/api/accounts/update", "/api/project/assign", "/api/tools/island-frequency/start", "/api/tools/excess-islands/start", "/api/tools/shape-descriptors/start", "/api/tools/island-cleanup/start", "/api/tools/island-cleanup/confirm", "/api/tools/island-cleanup/apply", "/api/tools/island-frequency/cancel", "/api/tools/excess-islands/cancel", "/api/tools/shape-descriptors/cancel", "/api/tools/island-cleanup/cancel", "/api/tools/instance-delete/start", "/api/tools/instance-delete/confirm", "/api/tools/instance-delete/apply", "/api/tools/instance-delete/cancel", "/api/export"}
         if path.startswith("/api/"):
             user = require_user(self, manager=path in manager_paths)
             if not user:
@@ -2146,7 +2403,31 @@ class Handler(BaseHTTPRequestHandler):
             except (ValueError, TypeError, json.JSONDecodeError) as error:
                 self.send_error(HTTPStatus.BAD_REQUEST, str(error))
             return
-        if path in {"/api/tools/island-frequency/cancel", "/api/tools/shape-descriptors/cancel", "/api/tools/excess-islands/cancel", "/api/tools/island-cleanup/cancel"}:
+        if path == "/api/tools/instance-delete/apply":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                payload = json.loads(self.rfile.read(length) or b"{}")
+                self.send_json(apply_instance_deletions(request_user(self), payload))
+            except (ValueError, TypeError, json.JSONDecodeError) as error:
+                self.send_error(HTTPStatus.BAD_REQUEST, str(error))
+            return
+        if path == "/api/tools/instance-delete/confirm":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                payload = json.loads(self.rfile.read(length) or b"{}")
+                self.send_json(confirm_instance_deletions(request_user(self), payload))
+            except (ValueError, TypeError, json.JSONDecodeError) as error:
+                self.send_error(HTTPStatus.BAD_REQUEST, str(error))
+            return
+        if path == "/api/tools/instance-delete/start":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                payload = json.loads(self.rfile.read(length) or b"{}")
+                self.send_json({"job_id": start_instance_delete_job(payload)})
+            except (ValueError, TypeError, json.JSONDecodeError) as error:
+                self.send_error(HTTPStatus.BAD_REQUEST, str(error))
+            return
+        if path in {"/api/tools/island-frequency/cancel", "/api/tools/shape-descriptors/cancel", "/api/tools/excess-islands/cancel", "/api/tools/island-cleanup/cancel", "/api/tools/instance-delete/cancel"}:
             try:
                 length = int(self.headers.get("Content-Length", "0"))
                 payload = json.loads(self.rfile.read(length) or b"{}")
@@ -2179,10 +2460,17 @@ class Handler(BaseHTTPRequestHandler):
         mask_edits = payload.get("mask_edits", {})
         created = payload.get("created", [])
         island_cleans = payload.get("island_cleans") if isinstance(payload.get("island_cleans"), dict) else read_collaboration().get("island_cleans", {})
+        instance_deletions = read_collaboration().get("instance_deletions", {})
+        deleted_ids = {
+            key for key, record in (instance_deletions or {}).items()
+            if isinstance(record, dict) and record.get("applied")
+        }
         image_ids = set(payload.get("image_ids", []))
         annotations = []
         for annotation in data["annotations"]:
             if image_ids and annotation["image_id"] not in image_ids:
+                continue
+            if str(annotation["id"]) in deleted_ids:
                 continue
             review = reviews.get(str(annotation["id"]))
             if review == "remove":
@@ -2241,11 +2529,11 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 self.send_json({"users": [account_payload(item) for item in AUTH_STORE.list_users()]}, send_body)
                 return
-            manager_paths = {"/api/project", "/api/project/config", "/api/project/collaboration", "/api/project/save/status", "/api/tools/excess-islands/status", "/api/tools/shape-descriptors/status", "/api/tools/island-frequency/status", "/api/tools/island-cleanup/status", "/api/tools/excess-islands/result", "/api/tools/shape-descriptors/result", "/api/tools/island-frequency/result", "/api/tools/island-cleanup/result"}
+            manager_paths = {"/api/project", "/api/project/config", "/api/project/collaboration", "/api/project/save/status", "/api/tools/excess-islands/status", "/api/tools/shape-descriptors/status", "/api/tools/island-frequency/status", "/api/tools/island-cleanup/status", "/api/tools/excess-islands/result", "/api/tools/shape-descriptors/result", "/api/tools/island-frequency/result", "/api/tools/island-cleanup/result", "/api/tools/instance-delete/status", "/api/tools/instance-delete/result"}
             user = require_user(self, manager=path in manager_paths)
             if not user:
                 return
-            if path in {"/api/tools/excess-islands/result", "/api/tools/shape-descriptors/result", "/api/tools/island-frequency/result", "/api/tools/island-cleanup/result"}:
+            if path in {"/api/tools/excess-islands/result", "/api/tools/shape-descriptors/result", "/api/tools/island-frequency/result", "/api/tools/island-cleanup/result", "/api/tools/instance-delete/result"}:
                 tool = path.removeprefix("/api/tools/").removesuffix("/result")
                 result = get_cached_analysis(tool, latest=True)
                 if result is None:
@@ -2287,7 +2575,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"bucket": PROJECT_SOURCE, "token_configured": bool(PROJECT_TOKEN), "autosave": PROJECT_AUTOSAVE}, send_body)
                 return
             if path == "/api/project/collaboration":
-                self.send_json({"island_cleans": read_collaboration().get("island_cleans", {})}, send_body)
+                collaboration = read_collaboration()
+                self.send_json({"island_cleans": collaboration.get("island_cleans", {}), "instance_deletions": collaboration.get("instance_deletions", {})}, send_body)
                 return
             if path == "/api/project":
                 document = read_project_manifest()
@@ -2361,6 +2650,14 @@ class Handler(BaseHTTPRequestHandler):
                 job = get_island_cleanup_job(job_id)
                 if job is None:
                     self.send_error(HTTPStatus.NOT_FOUND, "Island Cleanup job not found")
+                    return
+                self.send_json(job, send_body)
+                return
+            if path == "/api/tools/instance-delete/status":
+                job_id = parse_qs(parsed.query).get("job_id", [""])[0]
+                job = get_instance_delete_job(job_id)
+                if job is None:
+                    self.send_error(HTTPStatus.NOT_FOUND, "Delete Instances job not found")
                     return
                 self.send_json(job, send_body)
                 return
@@ -2513,7 +2810,6 @@ def main():
     if args.image_url and "{filename}" not in args.image_url:
         parser.error("--image-url must contain {filename}")
     WORKERS = args.workers
-    ensure_bootstrap_manager()
     try:
         remote_coco_url = args.coco_url or os.environ.get("COCO_URL")
         remote_image_url = args.image_url or os.environ.get("IMAGE_URL")
@@ -2536,6 +2832,7 @@ def main():
                 no_prompt=args.no_prompt,
             )
         data = load_dataset()
+        ensure_bootstrap_manager()
     except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as error:
         parser.error(str(error))
     server = ThreadingHTTPServer((args.host, args.port), Handler)

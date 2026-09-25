@@ -678,7 +678,7 @@ body.logged-out .app-shell {
 
 .filter-row {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(66px, 1fr));
   gap: 5px;
   padding: 0 14px 12px;
 }
@@ -690,6 +690,10 @@ body.logged-out .app-shell {
   background: transparent;
   color: var(--muted);
   font-size: 10px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
 }
 
 .filter-button:hover,

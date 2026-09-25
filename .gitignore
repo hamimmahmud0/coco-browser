@@ -2,3 +2,6 @@ dataset/
 project/
 .venv/
 creds/
+server.log
+__pycache__/
+.playwright-mcp/
