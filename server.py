@@ -73,6 +73,7 @@ _dataset = None
 _jobs = {}
 _shape_jobs = {}
 _cleanup_jobs = {}
+_island_cleanup_jobs = {}
 _project_save_jobs = {}
 _project_save_lock = threading.Lock()
 _collaboration_lock = threading.Lock()
@@ -820,15 +821,15 @@ def shape_values(annotation, descriptors, reference=None):
     return values
 
 
-def mask_component_areas(segmentation):
+def _mask_component_intervals(segmentation):
     if not isinstance(segmentation, dict):
-        return []
+        return 0, 0, []
     counts = segmentation.get("counts", [])
     if isinstance(counts, str):
         counts = decode_compressed_counts(counts)
     height, width = segmentation.get("size", [0, 0])
     if not counts or not height or not width:
-        return []
+        return 0, 0, []
     columns = {}
     position = 0
     for run_index, count in enumerate(counts):
@@ -869,13 +870,80 @@ def mask_component_areas(segmentation):
                     if start < previous_end and end > previous_start:
                         union(node, previous_node)
             current.append((start, end, node))
-            component_intervals.append((start, end, node))
+            component_intervals.append((start, end, column, node))
         previous_column, previous = column, current
+    return height, width, [(start, end, column, find(node)) for start, end, column, node in component_intervals]
+
+
+def mask_component_masks(segmentation):
+    height, width, component_intervals = _mask_component_intervals(segmentation)
+    if not component_intervals:
+        return []
+    roots = []
+    for start, end, column, root in component_intervals:
+        if root not in roots:
+            roots.append(root)
+    masks = []
+    for root in roots:
+        flat = np.zeros(height * width, dtype=bool)
+        for start, end, column, component_root in component_intervals:
+            if component_root == root:
+                flat[column * height + start : column * height + end] = True
+        masks.append(flat.reshape((height, width), order="F"))
+    return masks
+
+
+def mask_component_areas(segmentation):
+    _height, _width, component_intervals = _mask_component_intervals(segmentation)
+    if not component_intervals:
+        return []
     areas = {}
-    for start, end, node in component_intervals:
-        root = find(node)
+    for start, end, column, root in component_intervals:
         areas[root] = areas.get(root, 0) + end - start
     return list(areas.values())
+
+
+def encode_mask(mask):
+    flat = np.asarray(mask, dtype=bool).reshape(-1, order="F")
+    encoded = []
+    current = False
+    run = 0
+    for value in flat:
+        value = bool(value)
+        if value == current:
+            run += 1
+        else:
+            encoded.append(run)
+            current = not current
+            run = 1
+    encoded.append(run)
+    return encoded
+
+
+def apply_mask_drops(segmentation, drop_indices):
+    if not isinstance(segmentation, dict) or not drop_indices:
+        return segmentation
+    masks = mask_component_masks(segmentation)
+    drops = {int(index) for index in drop_indices}
+    if not drops or min(drops) < 0 or max(drops) >= len(masks):
+        raise ValueError("Invalid island drop index")
+    if len(drops) >= len(masks):
+        return None
+    kept = np.zeros_like(masks[0], dtype=bool)
+    for index, component in enumerate(masks):
+        if index not in drops:
+            kept |= component
+    return {"size": segmentation["size"], "counts": encode_mask(kept)}
+
+
+def mask_geometry(segmentation):
+    mask = mask_array(segmentation)
+    if mask is None or not mask.any():
+        return None
+    rows, columns = np.where(mask)
+    x0, x1 = int(columns.min()), int(columns.max()) + 1
+    y0, y1 = int(rows.min()), int(rows.max()) + 1
+    return [x0, y0, x1 - x0, y1 - y0, int(mask.sum())]
 
 
 def apply_mask_strokes(segmentation, strokes):
@@ -972,14 +1040,37 @@ def available_cpu_count():
     return os.cpu_count() or 1
 
 
-def count_island_range(bounds):
+def working_project_clean_indices(data):
+    collaboration = read_collaboration()
+    cleans = collaboration.get("island_cleans", {})
+    if not isinstance(cleans, dict):
+        return {}
+    applied = {}
+    for index, annotation in enumerate(data["annotations"]):
+        clean = cleans.get(str(annotation.get("id")))
+        if not isinstance(clean, dict) or not clean.get("applied"):
+            continue
+        drop_indices = clean.get("drop_indices", [])
+        if isinstance(drop_indices, list) and drop_indices:
+            applied[index] = drop_indices
+    return applied
+
+
+def count_island_range(bounds, clean_indices=None):
     start, end = bounds
     data = _dataset or load_dataset()
+    clean_indices = clean_indices or {}
     overall = Counter()
     categories = {}
     instances = {}
-    for annotation in data["annotations"][start:end]:
-        islands = count_mask_islands(annotation.get("segmentation"))
+    for index in range(start, end):
+        annotation = data["annotations"][index]
+        segmentation = annotation.get("segmentation")
+        if index in clean_indices:
+            segmentation = apply_mask_drops(segmentation, clean_indices[index])
+            if segmentation is None:
+                continue
+        islands = count_mask_islands(segmentation)
         overall[islands] += 1
         category = str(annotation.get("category_id"))
         categories.setdefault(category, Counter())[islands] += 1
@@ -1009,6 +1100,7 @@ def run_island_frequency(job_id, workers):
     try:
         data = load_dataset()
         annotations = data["annotations"]
+        applied_clean_indices = working_project_clean_indices(data)
         total = len(annotations)
         worker_count = max(1, min(available_cpu_count(), workers or available_cpu_count(), total or 1))
         chunk_target = worker_count * 4
@@ -1023,7 +1115,13 @@ def run_island_frequency(job_id, workers):
         pool = get_context("fork").Pool(processes=worker_count)
         _active_pools[job_id] = pool
         try:
-            pending_jobs = [pool.apply_async(count_island_range, (bound,)) for bound in bounds]
+            pending_jobs = [
+                pool.apply_async(
+                    count_island_range,
+                    (bound, {index: applied_clean_indices[index] for index in range(bound[0], bound[1]) if index in applied_clean_indices}),
+                )
+                for bound in bounds
+            ]
             while pending_jobs:
                 for pending in list(pending_jobs):
                     if not pending.ready():
@@ -1285,7 +1383,7 @@ def start_shape_descriptor_job(payload):
 
 def cancel_analysis_job(job_id):
     with _jobs_lock:
-        job = _jobs.get(job_id) or _shape_jobs.get(job_id) or _cleanup_jobs.get(job_id)
+        job = _jobs.get(job_id) or _shape_jobs.get(job_id) or _cleanup_jobs.get(job_id) or _island_cleanup_jobs.get(job_id)
         if job is None or job["status"] not in {"queued", "running", "cancelling"}:
             return False
         job["status"] = "cancelling"
@@ -1319,6 +1417,241 @@ def cleanup_range(arguments):
     return candidates, len(indices)
 
 
+def island_cleanup_parameters(payload):
+    try:
+        parameters = {
+            "min_islands": int(payload.get("min_islands", 2)),
+            "min_largest_other_ratio": float(payload.get("min_largest_other_ratio", 3.0)),
+            "evidence_enabled": bool(payload.get("evidence_enabled", False)),
+            "evidence_sample_count": max(0, int(payload.get("evidence_sample_count", 0))),
+            "evidence_tolerance": float(payload.get("evidence_tolerance", 0.25)),
+        }
+    except (TypeError, ValueError) as error:
+        raise ValueError("Invalid Island Cleanup parameters") from error
+    if parameters["min_islands"] < 2:
+        raise ValueError("Minimum island count must be at least 2")
+    if not math.isfinite(parameters["min_largest_other_ratio"]) or parameters["min_largest_other_ratio"] <= 0:
+        raise ValueError("Minimum largest-to-other area ratio must be greater than 0")
+    if not math.isfinite(parameters["evidence_tolerance"]) or not 0 <= parameters["evidence_tolerance"] <= 1:
+        raise ValueError("Evidence tolerance must be between 0 and 1")
+    if parameters["evidence_enabled"] and parameters["evidence_sample_count"] < 1:
+        raise ValueError("Evidence sample count must be at least 1 when enabled")
+    return parameters
+
+
+def island_cleanup_evidence(data):
+    evidence = {}
+    for annotation in data["annotations"]:
+        areas = mask_component_areas(annotation.get("segmentation"))
+        if len(areas) != 1:
+            continue
+        key = (annotation.get("image_id"), annotation.get("category_id"))
+        evidence.setdefault(key, []).append({"annotation_id": annotation["id"], "area": areas[0]})
+    for values in evidence.values():
+        values.sort(key=lambda item: item["annotation_id"])
+    return evidence
+
+
+def cleanup_candidate(annotation, areas, evidence, parameters):
+    island_count = len(areas)
+    if island_count < parameters["min_islands"]:
+        return None
+    largest_index = max(range(island_count), key=lambda index: (areas[index], -index))
+    largest = areas[largest_index]
+    other_area = sum(areas) - largest
+    ratio = largest / other_area if other_area else math.inf
+    if ratio < parameters["min_largest_other_ratio"]:
+        return None
+    evidence_ids = []
+    if parameters["evidence_enabled"]:
+        candidates = evidence.get((annotation.get("image_id"), annotation.get("category_id")), [])
+        matched = [
+            item
+            for item in candidates
+            if 1 - parameters["evidence_tolerance"] <= item["area"] / largest <= 1 + parameters["evidence_tolerance"]
+        ]
+        if len(matched) < parameters["evidence_sample_count"]:
+            return None
+        evidence_ids = [item["annotation_id"] for item in random.sample(matched, parameters["evidence_sample_count"])]
+    return {
+        "annotation_id": annotation["id"],
+        "image_id": annotation["image_id"],
+        "category_id": annotation.get("category_id"),
+        "island_count": island_count,
+        "component_areas": areas,
+        "largest_index": largest_index,
+        "largest_area": largest,
+        "other_area": other_area,
+        "largest_other_ratio": ratio,
+        "drop_indices": [index for index in range(island_count) if index != largest_index],
+        "evidence_annotation_ids": evidence_ids,
+    }
+
+
+def island_cleanup_range(arguments):
+    start, end, parameters, evidence = arguments
+    data = _dataset or load_dataset()
+    candidates = []
+    for index in range(start, end):
+        annotation = data["annotations"][index]
+        areas = mask_component_areas(annotation.get("segmentation"))
+        candidate = cleanup_candidate(annotation, areas, evidence, parameters)
+        if candidate:
+            candidates.append(candidate)
+    return candidates, end - start
+
+
+def update_island_cleanup_job(job_id, **values):
+    with _jobs_lock:
+        _island_cleanup_jobs[job_id].update(values)
+
+
+def run_island_cleanup_job(job_id, parameters):
+    started = time.monotonic()
+    try:
+        data = load_dataset()
+        total = len(data["annotations"])
+        evidence = island_cleanup_evidence(data) if parameters["evidence_enabled"] else {}
+        cancel_event = _job_cancel_events.setdefault(job_id, threading.Event())
+        update_island_cleanup_job(job_id, status="running", total=total, processed=0, progress=0, workers=1, available_cpus=available_cpu_count())
+        candidates = []
+        processed = 0
+        for start in range(0, total, 250):
+            if cancel_event.is_set():
+                update_island_cleanup_job(job_id, status="cancelled", elapsed_seconds=round(time.monotonic() - started, 3))
+                return
+            result, count = island_cleanup_range((start, min(start + 250, total), parameters, evidence))
+            candidates.extend(result)
+            processed += count
+            update_island_cleanup_job(job_id, processed=processed, progress=round(processed * 100 / total, 3) if total else 100, elapsed_seconds=round(time.monotonic() - started, 3))
+        result = {
+            "parameters": parameters,
+            "candidates": sorted(candidates, key=lambda item: item["annotation_id"]),
+            "processed": total,
+            "elapsed_seconds": round(time.monotonic() - started, 3),
+        }
+        cache_analysis_result("island-cleanup", parameters, result)
+        update_island_cleanup_job(job_id, status="completed", processed=total, progress=100, result=result)
+    except Exception as error:
+        if _job_cancel_events.get(job_id) and _job_cancel_events[job_id].is_set():
+            update_island_cleanup_job(job_id, status="cancelled", elapsed_seconds=round(time.monotonic() - started, 3))
+        else:
+            update_island_cleanup_job(job_id, status="error", error=str(error), elapsed_seconds=round(time.monotonic() - started, 3))
+
+
+def start_island_cleanup_job(payload):
+    parameters = island_cleanup_parameters(payload)
+    with _jobs_lock:
+        for job in _island_cleanup_jobs.values():
+            if job["status"] in {"queued", "running"}:
+                return job["id"]
+        job_id = uuid.uuid4().hex
+        _job_cancel_events[job_id] = threading.Event()
+        _island_cleanup_jobs[job_id] = {"id": job_id, "status": "queued", "processed": 0, "total": 0, "progress": 0, "created_at": time.time(), "parameters": parameters}
+    threading.Thread(target=run_island_cleanup_job, args=(job_id, parameters), daemon=True).start()
+    return job_id
+
+
+def confirm_island_cleans(user, payload):
+    parameters = island_cleanup_parameters(payload.get("parameters", {}))
+    entries = payload.get("entries", payload.get("candidates", []))
+    if not isinstance(entries, list):
+        raise ValueError("Island Cleanup entries must be a list")
+    if not entries:
+        raise ValueError("Island Cleanup confirmation requires at least one entry")
+    data = load_dataset()
+    annotations = {annotation["id"]: annotation for annotation in data["annotations"]}
+    evidence = island_cleanup_evidence(data) if parameters["evidence_enabled"] else {}
+    validated = {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise ValueError("Invalid Island Cleanup entry")
+        annotation = annotations.get(entry.get("annotation_id"))
+        if annotation is None:
+            raise ValueError(f"Unknown annotation ID: {entry.get('annotation_id')}")
+        areas = mask_component_areas(annotation.get("segmentation"))
+        raw_indices = entry.get("drop_indices", [])
+        if not raw_indices or not isinstance(raw_indices, list):
+            raise ValueError("Each Island Cleanup entry requires drop indices")
+        try:
+            drop_indices = sorted({int(index) for index in raw_indices})
+        except (TypeError, ValueError) as error:
+            raise ValueError("Invalid Island Cleanup drop index") from error
+        if len(drop_indices) != len(raw_indices) or any(index < 0 or index >= len(areas) for index in drop_indices) or len(drop_indices) >= len(areas):
+            raise ValueError("Invalid Island Cleanup drop indices")
+        candidate = cleanup_candidate(annotation, areas, evidence, parameters)
+        if candidate is None or set(drop_indices) != set(candidate["drop_indices"]):
+            raise ValueError(f"Island Cleanup criteria no longer match annotation {annotation['id']}")
+        validated[str(annotation["id"])] = {
+            "annotation_id": annotation["id"],
+            "drop_indices": drop_indices,
+            "component_areas": areas,
+            "parameters": parameters,
+            "confirmed_at": time.time(),
+            "confirmed_by": user["user_id"],
+        }
+    collaboration = read_collaboration()
+    collaboration.setdefault("island_cleans", {}).update(validated)
+    collaboration["revision"] = int(collaboration.get("revision", 0)) + 1
+    write_collaboration(collaboration)
+    return {"confirmed": len(validated), "island_cleans": collaboration["island_cleans"], "revision": collaboration["revision"]}
+
+
+def apply_island_cleans(user, payload):
+    scope = payload.get("scope", "current")
+    if scope not in {"current", "all"}:
+        raise ValueError("Island Cleanup apply scope must be current or all")
+    try:
+        image_id = int(payload["image_id"]) if payload.get("image_id") is not None else None
+    except (TypeError, ValueError) as error:
+        raise ValueError("Invalid Island Cleanup image ID") from error
+    if image_id is None:
+        raise ValueError("Island Cleanup apply requires an image ID")
+    data = load_dataset()
+    annotations = {annotation["id"]: annotation for annotation in data["annotations"]}
+    collaboration = read_collaboration()
+    cleans = collaboration.get("island_cleans", {})
+    if not isinstance(cleans, dict) or not cleans:
+        raise ValueError("No confirmed Island Cleanup entries to apply")
+    now = time.time()
+    applied = 0
+    cleaned_annotations = []
+    for key, clean in cleans.items():
+        if not isinstance(clean, dict):
+            continue
+        annotation = annotations.get(clean.get("annotation_id"))
+        if annotation is None:
+            continue
+        if scope == "all" and annotation.get("image_id") != image_id:
+            clean["applied"] = True
+            clean["applied_at"] = now
+            clean["applied_by"] = user["user_id"]
+            clean["apply_scope"] = scope
+            applied += 1
+            continue
+        if scope == "current" and annotation.get("image_id") != image_id:
+            continue
+        segmentation = apply_mask_drops(annotation.get("segmentation"), clean.get("drop_indices", []))
+        if segmentation is None:
+            raise ValueError(f"Island Cleanup would remove annotation {annotation['id']} completely")
+        geometry = mask_geometry(segmentation)
+        clean["applied"] = True
+        clean["applied_at"] = now
+        clean["applied_by"] = user["user_id"]
+        clean["apply_scope"] = scope
+        applied += 1
+        output = dict(annotation)
+        output["segmentation"] = segmentation
+        output["bbox"] = geometry[:4]
+        output["area"] = geometry[4]
+        cleaned_annotations.append(output)
+    if not applied:
+        raise ValueError("No confirmed Island Cleanup entries match the current image")
+    collaboration["revision"] = int(collaboration.get("revision", 0)) + 1
+    write_collaboration(collaboration)
+    return {"applied": applied, "scope": scope, "annotations": cleaned_annotations, "island_cleans": collaboration["island_cleans"], "revision": collaboration["revision"]}
+
+
 def update_cleanup_job(job_id, **values):
     with _jobs_lock:
         _cleanup_jobs[job_id].update(values)
@@ -1346,6 +1679,8 @@ def run_excess_island_job(job_id, filters):
                     processed += count
                     pending_jobs.remove(pending)
                     update_cleanup_job(job_id, processed=processed, progress=round(processed * 100 / total, 3) if total else 100, elapsed_seconds=round(time.monotonic() - started, 3))
+
+
                 if pending_jobs and cancel_event.wait(0.05):
                     update_cleanup_job(job_id, status="cancelled", elapsed_seconds=round(time.monotonic() - started, 3))
                     return
@@ -1387,6 +1722,12 @@ def start_excess_island_job(payload):
 def get_excess_island_job(job_id):
     with _jobs_lock:
         job = _cleanup_jobs.get(job_id)
+        return dict(job) if job else None
+
+
+def get_island_cleanup_job(job_id):
+    with _jobs_lock:
+        job = _island_cleanup_jobs.get(job_id)
         return dict(job) if job else None
 
 
@@ -1483,9 +1824,10 @@ def read_collaboration():
     except (OSError, json.JSONDecodeError):
         data = None
     if not isinstance(data, dict) or not isinstance(data.get("frames"), dict):
-        data = {"revision": 1, "frames": {}, "workspaces": {}, "accounts": {}}
+        data = {"revision": 1, "frames": {}, "workspaces": {}, "accounts": {}, "island_cleans": {}}
     data.setdefault("workspaces", {})
     data.setdefault("accounts", {})
+    data.setdefault("island_cleans", {})
     for image in load_dataset()["images"]:
         data["frames"].setdefault(str(image["id"]), {"state": "waiting", "assigned_to": None, "updated_at": time.time()})
     return data
@@ -1658,7 +2000,7 @@ class Handler(BaseHTTPRequestHandler):
                 AUTH_STORE.delete_session(user["token_hash"])
             self.send_bytes(b'{"logged_out":true}', "application/json; charset=utf-8", {"Set-Cookie": "session_id=; Max-Age=0; HttpOnly; SameSite=Lax; Path=/"})
             return
-        manager_paths = {"/api/project/configure", "/api/project/save", "/api/project/reset", "/api/projects/list", "/api/project/open", "/api/accounts", "/api/accounts/update", "/api/project/assign", "/api/tools/island-frequency/start", "/api/tools/excess-islands/start", "/api/tools/shape-descriptors/start", "/api/tools/island-frequency/cancel", "/api/tools/excess-islands/cancel", "/api/tools/shape-descriptors/cancel", "/api/export"}
+        manager_paths = {"/api/project/configure", "/api/project/save", "/api/project/reset", "/api/projects/list", "/api/project/open", "/api/accounts", "/api/accounts/update", "/api/project/assign", "/api/tools/island-frequency/start", "/api/tools/excess-islands/start", "/api/tools/shape-descriptors/start", "/api/tools/island-cleanup/start", "/api/tools/island-cleanup/confirm", "/api/tools/island-cleanup/apply", "/api/tools/island-frequency/cancel", "/api/tools/excess-islands/cancel", "/api/tools/shape-descriptors/cancel", "/api/tools/island-cleanup/cancel", "/api/export"}
         if path.startswith("/api/"):
             user = require_user(self, manager=path in manager_paths)
             if not user:
@@ -1743,7 +2085,33 @@ class Handler(BaseHTTPRequestHandler):
             except (ValueError, TypeError, json.JSONDecodeError) as error:
                 self.send_error(HTTPStatus.BAD_REQUEST, str(error))
             return
-        if path in {"/api/tools/island-frequency/cancel", "/api/tools/shape-descriptors/cancel", "/api/tools/excess-islands/cancel"}:
+        if path == "/api/tools/island-cleanup/start":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                payload = json.loads(self.rfile.read(length) or b"{}")
+                self.send_json({"job_id": start_island_cleanup_job(payload)})
+            except (ValueError, TypeError, json.JSONDecodeError) as error:
+                self.send_error(HTTPStatus.BAD_REQUEST, str(error))
+            return
+        if path == "/api/tools/island-cleanup/confirm":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if length > 20_000_000:
+                    raise ValueError("Island Cleanup confirmation is too large")
+                payload = json.loads(self.rfile.read(length) or b"{}")
+                self.send_json(confirm_island_cleans(request_user(self), payload))
+            except (ValueError, TypeError, json.JSONDecodeError) as error:
+                self.send_error(HTTPStatus.BAD_REQUEST, str(error))
+            return
+        if path == "/api/tools/island-cleanup/apply":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                payload = json.loads(self.rfile.read(length) or b"{}")
+                self.send_json(apply_island_cleans(request_user(self), payload))
+            except (ValueError, TypeError, json.JSONDecodeError) as error:
+                self.send_error(HTTPStatus.BAD_REQUEST, str(error))
+            return
+        if path in {"/api/tools/island-frequency/cancel", "/api/tools/shape-descriptors/cancel", "/api/tools/excess-islands/cancel", "/api/tools/island-cleanup/cancel"}:
             try:
                 length = int(self.headers.get("Content-Length", "0"))
                 payload = json.loads(self.rfile.read(length) or b"{}")
@@ -1775,6 +2143,7 @@ class Handler(BaseHTTPRequestHandler):
         edits = payload.get("edits", {})
         mask_edits = payload.get("mask_edits", {})
         created = payload.get("created", [])
+        island_cleans = payload.get("island_cleans") if isinstance(payload.get("island_cleans"), dict) else read_collaboration().get("island_cleans", {})
         image_ids = set(payload.get("image_ids", []))
         annotations = []
         for annotation in data["annotations"]:
@@ -1787,9 +2156,24 @@ class Handler(BaseHTTPRequestHandler):
             edit = edits.get(str(annotation["id"]))
             if edit:
                 output.update(edit)
+            clean = island_cleans.get(str(annotation["id"]))
+            segmentation = annotation.get("segmentation")
+            if clean:
+                segmentation = apply_mask_drops(segmentation, clean.get("drop_indices", []))
+                if segmentation is None:
+                    continue
             mask_strokes = mask_edits.get(str(annotation["id"]))
             if mask_strokes:
-                output["segmentation"] = apply_mask_strokes(annotation.get("segmentation"), mask_strokes)
+                segmentation = apply_mask_strokes(segmentation, mask_strokes)
+            if isinstance(segmentation, dict):
+                geometry = mask_geometry(segmentation)
+                if geometry is None:
+                    continue
+                output["segmentation"] = segmentation
+                output["bbox"] = geometry[:4]
+                output["area"] = geometry[4]
+            elif segmentation is not None:
+                output["segmentation"] = segmentation
             if review:
                 output["review"] = review
             annotations.append(output)
@@ -1822,11 +2206,11 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 self.send_json({"users": [account_payload(item) for item in AUTH_STORE.list_users()]}, send_body)
                 return
-            manager_paths = {"/api/project", "/api/project/config", "/api/project/save/status", "/api/tools/excess-islands/status", "/api/tools/shape-descriptors/status", "/api/tools/island-frequency/status", "/api/tools/excess-islands/result", "/api/tools/shape-descriptors/result", "/api/tools/island-frequency/result"}
+            manager_paths = {"/api/project", "/api/project/config", "/api/project/collaboration", "/api/project/save/status", "/api/tools/excess-islands/status", "/api/tools/shape-descriptors/status", "/api/tools/island-frequency/status", "/api/tools/island-cleanup/status", "/api/tools/excess-islands/result", "/api/tools/shape-descriptors/result", "/api/tools/island-frequency/result", "/api/tools/island-cleanup/result"}
             user = require_user(self, manager=path in manager_paths)
             if not user:
                 return
-            if path in {"/api/tools/excess-islands/result", "/api/tools/shape-descriptors/result", "/api/tools/island-frequency/result"}:
+            if path in {"/api/tools/excess-islands/result", "/api/tools/shape-descriptors/result", "/api/tools/island-frequency/result", "/api/tools/island-cleanup/result"}:
                 tool = path.removeprefix("/api/tools/").removesuffix("/result")
                 result = get_cached_analysis(tool, latest=True)
                 if result is None:
@@ -1866,6 +2250,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if path == "/api/project/config":
                 self.send_json({"bucket": PROJECT_SOURCE, "token_configured": bool(PROJECT_TOKEN), "autosave": PROJECT_AUTOSAVE}, send_body)
+                return
+            if path == "/api/project/collaboration":
+                self.send_json({"island_cleans": read_collaboration().get("island_cleans", {})}, send_body)
                 return
             if path == "/api/project":
                 document = read_project_manifest()
@@ -1931,6 +2318,14 @@ class Handler(BaseHTTPRequestHandler):
                 job = get_island_frequency_job(job_id)
                 if job is None:
                     self.send_error(HTTPStatus.NOT_FOUND, "Island Frequency job not found")
+                    return
+                self.send_json(job, send_body)
+                return
+            if path == "/api/tools/island-cleanup/status":
+                job_id = parse_qs(parsed.query).get("job_id", [""])[0]
+                job = get_island_cleanup_job(job_id)
+                if job is None:
+                    self.send_error(HTTPStatus.NOT_FOUND, "Island Cleanup job not found")
                     return
                 self.send_json(job, send_body)
                 return

@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
   <title>COCO 1.0 Annotation Browser</title>
-  <link rel="stylesheet" href="/style.css?v=68">
+  <link rel="stylesheet" href="/style.css?v=70">
 </head>
 <body>
   <header class="topbar">
@@ -66,6 +66,7 @@
             <button id="island-frequency-tool" class="ribbon-command large" type="button"><i data-lucide="bar-chart-3"></i><span>Frequency</span></button>
             <button id="shape-descriptor-tool" class="ribbon-command large" type="button"><i data-lucide="scan-line"></i><span>Descriptors</span></button>
             <button id="excess-island-tool" class="ribbon-command large" type="button"><i data-lucide="list-filter"></i><span>Excess</span></button>
+            <button id="island-cleanup-tool" class="ribbon-command large" type="button"><i data-lucide="eraser"></i><span>Cleanup</span></button>
           </div>
         </div>
       </div>
@@ -317,6 +318,31 @@
     </div>
   </div>
 
+  <div id="island-cleanup-modal" class="modal excess-island-modal" role="dialog" aria-modal="true" aria-labelledby="island-cleanup-title" hidden>
+    <div class="modal-card excess-island-card">
+      <div class="modal-header">
+        <div>
+          <h2 id="island-cleanup-title">Island Cleanup</h2>
+          <p>Dry-run cleanup of excess mask islands before applying drops</p>
+        </div>
+        <button id="close-island-cleanup-modal" class="icon-button" type="button" title="Close">×</button>
+      </div>
+      <div id="island-cleanup-setup" class="excess-island-setup">
+        <div class="excess-range-inputs"><label>Minimum islands N <input id="island-cleanup-min-islands" type="number" min="2" value="2"></label><label>Minimum largest / other area ratio T <input id="island-cleanup-min-ratio" type="number" min="0.01" step="0.01" value="3"></label></div>
+        <button id="island-cleanup-evidence-enabled" class="excess-filter-check toggle-button" type="button" aria-pressed="false"><span><strong>Same-image/class evidence</strong><small>Require similar single-island evidence in the same image and class</small></span></button>
+        <div id="island-cleanup-evidence-inputs" class="excess-range-inputs" hidden><label>Sample count k <input id="island-cleanup-evidence-sample-count" type="number" min="1" value="2"></label><label>Relative tolerance a <input id="island-cleanup-evidence-tolerance" type="number" min="0" max="1" step="0.01" value="0.25"></label></div>
+        <div class="excess-run-row"><span>Dry run only; no data changes occur until confirmation</span><button id="run-island-cleanup" class="button primary" type="button">Run dry run</button><button id="island-cleanup-stop" class="button danger" type="button" hidden>Stop</button></div>
+        <div id="island-cleanup-progress" class="shape-run-progress" hidden><progress id="island-cleanup-progress-bar" max="100" value="0"></progress><span id="island-cleanup-progress-count">0 / 0</span></div>
+      </div>
+      <div id="island-cleanup-results" class="excess-island-results" hidden>
+        <div class="shape-results-toolbar"><span>Cached dry-run result</span><div class="shape-result-actions"><button id="copy-island-cleanup-result" class="button secondary" type="button">Copy result</button><button id="recalculate-island-cleanup" class="button secondary" type="button">Recalculate</button><button id="confirm-island-cleanup" class="button primary" type="button">Confirm drops</button><button id="apply-island-cleanup-current" class="button secondary" type="button">Apply current image</button><button id="apply-island-cleanup-all" class="button secondary" type="button">Apply all confirmed</button></div></div>
+        <div id="island-cleanup-apply-status" class="island-cleanup-apply-status" role="status" aria-live="polite"></div>
+        <div id="island-cleanup-summary" class="shape-result-summary"></div>
+        <div id="island-cleanup-table"></div>
+      </div>
+    </div>
+  </div>
+
   <div id="accounts-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="accounts-title" hidden>
     <div class="modal-card accounts-card">
       <div class="modal-header">
@@ -412,6 +438,6 @@
 
   <div id="toast" class="toast" role="status"></div>
   <script src="https://unpkg.com/lucide@0.547.0/dist/umd/lucide.js"></script>
-  <script src="/app.js?v=68"></script>
+  <script src="/app.js?v=70"></script>
 </body>
 </html>

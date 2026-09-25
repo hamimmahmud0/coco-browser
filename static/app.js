@@ -58,6 +58,9 @@ const state = {
   reviews: readStorage("coco-reviews", {}),
   edits: readStorage("coco-edits", {}),
   created: readStorage("coco-created", []),
+  islandCleans: readStorage("coco-island-cleans", {}),
+  appliedIslandCleans: readStorage("coco-applied-island-cleans", {}),
+  islandCleanupResult: null,
 };
 
 const elements = {
@@ -159,6 +162,30 @@ const elements = {
   copyShapeResult: document.querySelector("#copy-shape-result"),
   recalculateShapeDescriptors: document.querySelector("#recalculate-shape-descriptors"),
   recalculateExcessIslands: document.querySelector("#recalculate-excess-islands"),
+  islandCleanupTool: document.querySelector("#island-cleanup-tool"),
+  islandCleanupModal: document.querySelector("#island-cleanup-modal"),
+  closeIslandCleanupModal: document.querySelector("#close-island-cleanup-modal"),
+  islandCleanupSetup: document.querySelector("#island-cleanup-setup"),
+  islandCleanupResults: document.querySelector("#island-cleanup-results"),
+  islandCleanupMinIslands: document.querySelector("#island-cleanup-min-islands"),
+  islandCleanupMinRatio: document.querySelector("#island-cleanup-min-ratio"),
+  islandCleanupEvidenceEnabled: document.querySelector("#island-cleanup-evidence-enabled"),
+  islandCleanupEvidenceSampleCount: document.querySelector("#island-cleanup-evidence-sample-count"),
+  islandCleanupEvidenceTolerance: document.querySelector("#island-cleanup-evidence-tolerance"),
+  islandCleanupEvidenceInputs: document.querySelector("#island-cleanup-evidence-inputs"),
+  runIslandCleanup: document.querySelector("#run-island-cleanup"),
+  islandCleanupStop: document.querySelector("#island-cleanup-stop"),
+  islandCleanupProgress: document.querySelector("#island-cleanup-progress"),
+  islandCleanupProgressBar: document.querySelector("#island-cleanup-progress-bar"),
+  islandCleanupProgressCount: document.querySelector("#island-cleanup-progress-count"),
+  islandCleanupSummary: document.querySelector("#island-cleanup-summary"),
+  islandCleanupTable: document.querySelector("#island-cleanup-table"),
+  recalculateIslandCleanup: document.querySelector("#recalculate-island-cleanup"),
+  copyIslandCleanupResult: document.querySelector("#copy-island-cleanup-result"),
+  confirmIslandCleanup: document.querySelector("#confirm-island-cleanup"),
+  applyIslandCleanupCurrent: document.querySelector("#apply-island-cleanup-current"),
+  applyIslandCleanupAll: document.querySelector("#apply-island-cleanup-all"),
+  islandCleanupApplyStatus: document.querySelector("#island-cleanup-apply-status"),
   islandSummary: document.querySelector("#island-summary"),
   frequencyChart: document.querySelector("#frequency-chart"),
   frequencyTotal: document.querySelector("#frequency-total"),
@@ -240,6 +267,10 @@ const toolRegistry = {
     label: "Excess Island Filter",
     run: openExcessIslandFilter,
   },
+  islandCleanup: {
+    label: "Island Cleanup",
+    run: openIslandCleanup,
+  },
 };
 
 function setRibbonCategory(category) {
@@ -287,6 +318,8 @@ function persist() {
       localStorage.setItem("coco-edits", JSON.stringify(state.edits));
       localStorage.setItem("coco-created", JSON.stringify(state.created));
       localStorage.setItem("coco-mask-edits", JSON.stringify(state.maskEdits));
+      localStorage.setItem("coco-island-cleans", JSON.stringify(state.islandCleans));
+      localStorage.setItem("coco-applied-island-cleans", JSON.stringify(state.appliedIslandCleans));
       elements.saveState.textContent = "Local edits enabled";
     } catch {
       elements.saveState.textContent = "Local storage full";
@@ -431,6 +464,8 @@ function applyProjectDocument(projectDocument) {
   state.edits = JSON.parse(JSON.stringify(firstState.edits || {}));
   state.created = JSON.parse(JSON.stringify(firstState.created || []));
   state.maskEdits = JSON.parse(JSON.stringify(firstState.maskEdits || {}));
+  state.islandCleans = JSON.parse(JSON.stringify(firstState.islandCleans || {}));
+  state.appliedIslandCleans = JSON.parse(JSON.stringify(firstState.appliedIslandCleans || {}));
   state.nextNewId = firstState.nextNewId || 1;
   editHistory.length = 0;
   const historyOffset = Math.max(entries.length - historyLimit, 0);
@@ -504,6 +539,8 @@ async function startNewProject() {
   state.edits = {};
   state.created = [];
   state.maskEdits = {};
+  state.islandCleans = {};
+  state.appliedIslandCleans = {};
   state.nextNewId = (state.dataset?.max_annotation_id || 0) + 1;
   state.selectedId = null;
   state.filter = "all";
@@ -688,6 +725,8 @@ function captureHistoryState() {
     edits: JSON.parse(JSON.stringify(state.edits)),
     created: JSON.parse(JSON.stringify(state.created)),
     maskEdits: JSON.parse(JSON.stringify(state.maskEdits)),
+    islandCleans: JSON.parse(JSON.stringify(state.islandCleans)),
+    appliedIslandCleans: JSON.parse(JSON.stringify(state.appliedIslandCleans)),
     nextNewId: state.nextNewId,
   };
 }
@@ -697,6 +736,8 @@ function applyHistoryState(snapshot) {
   state.edits = JSON.parse(JSON.stringify(snapshot.edits));
   state.created = JSON.parse(JSON.stringify(snapshot.created));
   state.maskEdits = JSON.parse(JSON.stringify(snapshot.maskEdits));
+  state.islandCleans = JSON.parse(JSON.stringify(snapshot.islandCleans || {}));
+  state.appliedIslandCleans = JSON.parse(JSON.stringify(snapshot.appliedIslandCleans || {}));
   state.nextNewId = snapshot.nextNewId;
   refreshCurrentImageState();
   persist();
@@ -823,6 +864,7 @@ function upgradeToggleButtons() {
     elements.drawMode,
     elements.excessRangeEnabled,
     elements.excessAreaRatioEnabled,
+    elements.islandCleanupEvidenceEnabled,
   ]) {
     upgradeToggleButton(button);
   }
@@ -925,6 +967,210 @@ async function runIslandFrequency(recalculate = false) {
     state.activeToolJob = null;
     elements.stopToolTask.disabled = true;
   }
+}
+
+async function openIslandCleanup() {
+  elements.islandCleanupSetup.hidden = false;
+  elements.islandCleanupResults.hidden = true;
+  elements.islandCleanupProgress.hidden = true;
+  elements.islandCleanupStop.hidden = true;
+  elements.islandCleanupModal.hidden = false;
+  elements.islandCleanupEvidenceInputs.hidden = !elements.islandCleanupEvidenceEnabled.checked;
+  state.islandCleanupResult = null;
+  try {
+    const response = await request("/api/tools/island-cleanup/result");
+    const cached = (await response.json()).result;
+    state.islandCleanupResult = cached;
+    renderIslandCleanupResults(cached);
+    elements.islandCleanupSetup.hidden = true;
+    elements.islandCleanupResults.hidden = false;
+    showToast("Loaded cached Island Cleanup result");
+  } catch (error) {
+    if (!error.message.includes("404")) showToast(error.message);
+  }
+}
+
+function islandCleanupParameters() {
+  const evidenceEnabled = elements.islandCleanupEvidenceEnabled.checked;
+  return {
+    min_islands: Math.max(2, Number(elements.islandCleanupMinIslands.value) || 2),
+    min_largest_other_ratio: Number(elements.islandCleanupMinRatio.value) || 0,
+    evidence_enabled: evidenceEnabled,
+    evidence_sample_count: evidenceEnabled ? Math.max(1, Number(elements.islandCleanupEvidenceSampleCount.value) || 1) : 0,
+    evidence_tolerance: evidenceEnabled ? Number(elements.islandCleanupEvidenceTolerance.value) || 0 : 0,
+  };
+}
+
+function sameIslandCleanupParameters(first, second) {
+  return JSON.stringify(first || {}) === JSON.stringify(second || {});
+}
+
+function renderIslandCleanupResults(result) {
+  state.islandCleanupResult = result;
+  elements.islandCleanupSummary.replaceChildren();
+  for (const [label, value] of [["Instances scanned", result.processed], ["Cleanup candidates", result.candidates.length], ["Dropped islands", result.candidates.reduce((total, candidate) => total + candidate.drop_indices.length, 0)], ["Minimum islands", result.parameters.min_islands], ["Largest / other threshold", `≥ ${result.parameters.min_largest_other_ratio}`]]) {
+    const chip = element("div", "shape-result-chip");
+    chip.append(element("strong", "", String(value)), document.createTextNode(` ${label}`));
+    elements.islandCleanupSummary.append(chip);
+  }
+  elements.islandCleanupTable.replaceChildren();
+  const header = element("div", "excess-island-row header");
+  header.append(element("span", "", "Annotation"), element("span", "", "Image"), element("span", "", "Class"), element("span", "", "Islands"), element("span", "", "Largest / other"), element("span", "", "Drops"), element("span", "", "Evidence"));
+  elements.islandCleanupTable.append(header);
+  for (const candidate of result.candidates.slice(0, 5000)) {
+    const row = element("div", "excess-island-row");
+    row.append(element("span", "", `#${candidate.annotation_id}`), element("span", "", candidate.image_id), element("span", "", categoryName(candidate.category_id)), element("span", "", candidate.island_count), element("span", "", candidate.largest_other_ratio === Infinity ? "∞" : candidate.largest_other_ratio.toFixed(2)), element("span", "", candidate.drop_indices.join(", ")), element("span", "", candidate.evidence_annotation_ids.length || "—"));
+    elements.islandCleanupTable.append(row);
+  }
+  if (result.candidates.length > 5000) elements.islandCleanupTable.append(element("div", "object-empty", `Showing first 5,000 of ${formatNumber(result.candidates.length)} candidates`));
+}
+
+async function runIslandCleanup(recalculate = false) {
+  if (state.activeCleanupJob) return;
+  const parameters = islandCleanupParameters();
+  if (parameters.min_largest_other_ratio <= 0) {
+    showToast("Enter a largest-to-other area ratio greater than 0");
+    return;
+  }
+  if (!recalculate && state.islandCleanupResult && sameIslandCleanupParameters(state.islandCleanupResult.parameters, parameters)) {
+    renderIslandCleanupResults(state.islandCleanupResult);
+    elements.islandCleanupSetup.hidden = true;
+    elements.islandCleanupResults.hidden = false;
+    showToast("Loaded cached Island Cleanup result");
+    return;
+  }
+  elements.runIslandCleanup.disabled = true;
+  elements.islandCleanupProgress.hidden = false;
+  elements.islandCleanupStop.hidden = false;
+  try {
+    const response = await request("/api/tools/island-cleanup/start", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(parameters) });
+    const { job_id: jobId } = await response.json();
+    state.activeCleanupJob = jobId;
+    elements.stopToolTask.disabled = false;
+    while (state.activeCleanupJob === jobId) {
+      const statusResponse = await request(`/api/tools/island-cleanup/status?job_id=${encodeURIComponent(jobId)}`);
+      const job = await statusResponse.json();
+      elements.islandCleanupProgressBar.value = job.progress || 0;
+      elements.islandCleanupProgressCount.textContent = `${formatNumber(job.processed || 0)} / ${formatNumber(job.total || 0)}`;
+      if (job.status === "completed") {
+        renderIslandCleanupResults(job.result);
+        elements.islandCleanupSetup.hidden = true;
+        elements.islandCleanupResults.hidden = false;
+        elements.islandCleanupProgress.hidden = true;
+        elements.islandCleanupStop.hidden = true;
+        showToast("Island Cleanup dry run complete");
+        break;
+      }
+      if (job.status === "cancelled") {
+        elements.islandCleanupProgress.hidden = true;
+        elements.islandCleanupStop.hidden = true;
+        showToast("Island Cleanup task stopped");
+        break;
+      }
+      if (job.status === "error") throw new Error(job.error || "Island Cleanup analysis failed");
+      await wait(600);
+    }
+  } catch (error) {
+    elements.islandCleanupProgress.hidden = true;
+    elements.islandCleanupStop.hidden = true;
+    showToast(error.message);
+  } finally {
+    state.activeCleanupJob = null;
+    elements.stopToolTask.disabled = true;
+    elements.runIslandCleanup.disabled = false;
+  }
+}
+
+async function confirmIslandCleanup() {
+  const result = state.islandCleanupResult;
+  if (!result?.candidates?.length) {
+    showToast("Run a dry run with cleanup candidates first");
+    return;
+  }
+  if (!window.confirm(`Apply ${result.candidates.length} cleanup result${result.candidates.length === 1 ? "" : "s"} to the project collaboration state?`)) return;
+  const before = captureHistoryState();
+  try {
+    const response = await request("/api/tools/island-cleanup/confirm", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ parameters: result.parameters, entries: result.candidates }),
+    });
+    const confirmed = await response.json();
+    state.islandCleans = confirmed.island_cleans || state.islandCleans;
+    for (const annotationId of Object.keys(state.islandCleans)) delete state.appliedIslandCleans[annotationId];
+    persist();
+    commitHistory("Confirm Island Cleanup", before);
+    showToast("Island Cleanup drops confirmed");
+  } catch (error) {
+    showToast(error.message);
+  }
+}
+
+function setIslandCleanupApplyBusy(busy, message = "") {
+  elements.applyIslandCleanupCurrent.disabled = busy;
+  elements.applyIslandCleanupAll.disabled = busy;
+  elements.islandCleanupApplyStatus.textContent = message;
+  elements.islandCleanupApplyStatus.classList.toggle("busy", busy);
+}
+
+async function applyIslandCleanup(scope) {
+  const imageId = state.current?.id;
+  if (!imageId) {
+    showToast("Open an image before applying Island Cleanup");
+    return;
+  }
+  const all = scope === "all";
+  setIslandCleanupApplyBusy(true, all ? "Applying all confirmed drops to the working project…" : "Applying confirmed drops to the current image…");
+  await wait(50);
+  const before = captureHistoryState();
+  try {
+    const response = await request("/api/tools/island-cleanup/apply", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ scope, image_id: imageId }),
+    });
+    const result = await response.json();
+    state.islandCleans = result.island_cleans || state.islandCleans;
+    for (const annotation of result.annotations || []) {
+      state.appliedIslandCleans[String(annotation.id)] = {
+        segmentation: annotation.segmentation,
+        bbox: annotation.bbox,
+        area: annotation.area,
+      };
+    }
+    state.maskCache = null;
+    state.maskCacheKey = "";
+    persist();
+    commitHistory(scope === "all" ? "Apply all Island Cleanup" : "Apply Island Cleanup to current image", before);
+    refreshCurrentImageState();
+    renderObjects();
+    draw();
+    const message = all ? `Applied Island Cleanup to ${formatNumber(result.applied)} project annotations.` : `Applied Island Cleanup to ${formatNumber(result.applied)} annotations in this image.`;
+    setIslandCleanupApplyBusy(false, message);
+    showToast(message);
+  } catch (error) {
+    setIslandCleanupApplyBusy(false, `Apply failed: ${error.message}`);
+    showToast(error.message);
+  }
+}
+
+async function copyIslandCleanupResult() {
+  if (!state.islandCleanupResult) return;
+  try {
+    await navigator.clipboard.writeText(JSON.stringify(state.islandCleanupResult, null, 2));
+    showToast("Island Cleanup result copied");
+  } catch (error) {
+    showToast(error.message);
+  }
+}
+
+function closeIslandCleanup() {
+  if (!elements.islandCleanupResults.hidden) {
+    elements.islandCleanupResults.hidden = true;
+    elements.islandCleanupSetup.hidden = false;
+    return;
+  }
+  elements.islandCleanupModal.hidden = true;
 }
 
 const shapeDescriptorCatalog = [
@@ -1965,6 +2211,10 @@ async function loadDataset() {
     if (data.categories.length) state.activeCategory = data.categories[0].id;
     renderCategories();
     const projectUi = await loadProjectDocument();
+    if (state.currentUser?.role === "manager") {
+      const collaborationResponse = await request("/api/project/collaboration");
+      if (collaborationResponse.ok) state.islandCleans = (await collaborationResponse.json()).island_cleans || {};
+    }
     applyFilter();
     const requested = projectUi?.current_image_id || Number(location.hash.slice(1));
     const initial = state.filtered.find((image) => image.id === requested) || state.filtered[0];
@@ -2288,7 +2538,8 @@ function getAnnotations() {
 
 function effectiveAnnotation(annotation) {
   const edit = state.edits[String(annotation.id)];
-  return edit ? { ...annotation, ...edit } : annotation;
+  const applied = state.appliedIslandCleans[String(annotation.id)];
+  return { ...annotation, ...(applied || {}), ...(edit || {}) };
 }
 
 function isCreated(annotation) {
@@ -2740,7 +2991,7 @@ async function downloadCurrent() {
     const response = await request("/api/export", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ reviews: state.reviews, edits: state.edits, mask_edits: state.maskEdits, created: state.created, image_ids: [state.imageData.image.id] }),
+      body: JSON.stringify({ reviews: state.reviews, edits: state.edits, mask_edits: state.maskEdits, island_cleans: state.islandCleans, created: state.created, image_ids: [state.imageData.image.id] }),
     });
     const blob = await response.blob();
     downloadBlob(blob, state.imageData.image.file_name.replace(/\.[^.]+$/, "-reviewed.json"));
@@ -2757,7 +3008,7 @@ async function exportAll() {
     const response = await request("/api/export", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ reviews: state.reviews, edits: state.edits, mask_edits: state.maskEdits, created: state.created }),
+      body: JSON.stringify({ reviews: state.reviews, edits: state.edits, mask_edits: state.maskEdits, island_cleans: state.islandCleans, created: state.created }),
     });
     const blob = await response.blob();
     downloadBlob(blob, "instances-reviewed.json");
@@ -2932,10 +3183,25 @@ elements.exportAll.addEventListener("click", exportAll);
 elements.islandFrequencyTool.addEventListener("click", () => toolRegistry.islandFrequency.run());
 elements.shapeDescriptorTool.addEventListener("click", () => toolRegistry.shapeDescriptors.run());
 elements.excessIslandTool.addEventListener("click", () => toolRegistry.excessIslands.run());
+elements.islandCleanupTool.addEventListener("click", () => toolRegistry.islandCleanup.run());
 elements.recalculateIslandFrequency.addEventListener("click", () => runIslandFrequency(true));
 elements.copyShapeResult.addEventListener("click", copyShapeResult);
 elements.recalculateShapeDescriptors.addEventListener("click", () => runShapeDescriptorLab(true));
 elements.recalculateExcessIslands.addEventListener("click", () => runExcessIslandFilter(true));
+elements.islandCleanupEvidenceEnabled.addEventListener("change", () => {
+  elements.islandCleanupEvidenceInputs.hidden = !elements.islandCleanupEvidenceEnabled.checked;
+});
+elements.runIslandCleanup.addEventListener("click", runIslandCleanup);
+elements.islandCleanupStop.addEventListener("click", stopActiveTask);
+elements.recalculateIslandCleanup.addEventListener("click", () => runIslandCleanup(true));
+elements.copyIslandCleanupResult.addEventListener("click", copyIslandCleanupResult);
+elements.confirmIslandCleanup.addEventListener("click", confirmIslandCleanup);
+elements.applyIslandCleanupCurrent.addEventListener("click", () => applyIslandCleanup("current"));
+elements.applyIslandCleanupAll.addEventListener("click", () => applyIslandCleanup("all"));
+elements.closeIslandCleanupModal.addEventListener("click", closeIslandCleanup);
+elements.islandCleanupModal.addEventListener("click", (event) => {
+  if (event.target === elements.islandCleanupModal) closeIslandCleanup();
+});
 elements.closeExcessIslandModal.addEventListener("click", closeExcessIslandFilter);
 elements.excessIslandModal.addEventListener("click", (event) => {
   if (event.target === elements.excessIslandModal) closeExcessIslandFilter();
@@ -3066,8 +3332,13 @@ document.addEventListener("keydown", (event) => {
       closeExcessIslandFilter();
       return;
     }
+    if (!elements.islandCleanupModal.hidden) {
+      closeIslandCleanup();
+      return;
+    }
     if (!elements.shapeModal.hidden) {
       closeShapeModal();
+
       return;
     }
     if (!elements.inspectModal.hidden) {
@@ -3123,6 +3394,8 @@ function applyAuthenticatedUser(user, csrfToken) {
     state.edits = {};
     state.created = [];
     state.maskEdits = {};
+    state.islandCleans = {};
+    state.appliedIslandCleans = {};
   } else {
     setRibbonCategory(state.ribbonCategory);
   }

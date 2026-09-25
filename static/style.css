@@ -1316,7 +1316,20 @@ select {
 .shape-result-actions {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 6px;
+}
+
+.island-cleanup-apply-status {
+  min-height: 18px;
+  margin: 0 0 10px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.island-cleanup-apply-status.busy {
+  color: var(--accent);
 }
 
 .shape-results-toolbar {
@@ -2089,6 +2102,11 @@ select {
   padding: 8px 10px;
   border-bottom: 1px solid var(--line);
   font-size: 10px;
+}
+
+.island-cleanup-results .excess-island-row {
+  min-width: 900px;
+  grid-template-columns: 1fr 0.7fr 0.7fr 0.7fr 1fr 1fr 1.4fr;
 }
 
 .excess-island-row.header {

@@ -28,6 +28,7 @@ The default dataset is:
 - Frame workflow states are `waiting`, `annotated`, and `reviewed`.
 - Runs background dataset tools with live status-bar progress.
 - Includes the **Island Frequency** tool for connected-component analysis across all instances.
+- Includes a manager-only **Island Cleanup** tool with dry-run analysis, explicit confirmation, and cached results.
 - Includes snapshot-based undo/redo and a Photoshop-style history selector.
 
 ## Requirements
@@ -213,6 +214,12 @@ The tool scans all instances, reports multi-island candidates, and shows candida
 
 
 
+## Island Cleanup
+
+Open **Analysis → Cleanup**. Set the minimum island count `N` and minimum largest-to-other area ratio threshold `T`; instances qualify when the ratio is greater than or equal to `T`. Optionally require `k` random similar single-island annotations from the same image and class with relative tolerance `a`. The first run is always a dry run and does not modify dataset or project data. Review the cached result, use **Copy result** or **Recalculate**, then explicitly choose **Confirm drops** to store validated island indices in project collaboration state. The modal and all cleanup API routes are manager-only and can be cancelled while running.
+
+Confirmed drops are applied during export before existing mask brush strokes. The exporter recomputes mask area and bounding boxes, omits annotations whose masks are fully removed, and preserves the cleanup state in browser and project history. The `island_cleans` collaboration record is synchronized with project data when project sync is enabled. **Apply current image** materializes cleaned masks in the active working view; **Apply all confirmed** records all confirmed drops as applied in the working project and refreshes the current image. Neither option rewrites the source dataset.
+
 ## Editing Model
 
 ### Existing annotations
@@ -281,6 +288,12 @@ Authentication is required for all application APIs. The first startup creates a
 | `POST` | `/api/export` | Build a full edited COCO JSON export |
 | `POST` | `/api/tools/island-frequency/start` | Start an Island Frequency analysis job |
 | `GET` | `/api/tools/island-frequency/status?job_id={id}` | Poll Island Frequency progress and results |
+| `POST` | `/api/tools/island-cleanup/start` | Start an Island Cleanup dry-run job |
+| `GET` | `/api/tools/island-cleanup/status?job_id={id}` | Poll Island Cleanup progress and results |
+| `GET` | `/api/tools/island-cleanup/result` | Get the latest cached Island Cleanup dry run |
+| `POST` | `/api/tools/island-cleanup/confirm` | Validate and store confirmed island drops |
+| `POST` | `/api/tools/island-cleanup/apply` | Apply confirmed drops to the current image or working project |
+| `POST` | `/api/tools/island-cleanup/cancel` | Cancel an Island Cleanup job |
 
 The complete COCO source is downloaded and indexed once on the first dataset request, then kept in server memory for the lifetime of the process.
 
