@@ -1,5 +1,6 @@
 import argparse
 import getpass
+import hashlib
 import json
 import math
 from collections import Counter
@@ -8,6 +9,8 @@ import mimetypes
 import numpy as np
 import os
 import re
+import secrets
+import random
 import sys
 import threading
 import traceback
@@ -17,9 +20,12 @@ import urllib.error
 import urllib.request
 import yaml
 from http import HTTPStatus
+from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
+
+from auth_store import AuthStore
 
 HOST = os.environ.get("HOST", "0.0.0.0")
 PORT = int(os.environ.get("PORT", "8888"))
@@ -54,6 +60,7 @@ PROJECT_CACHE_DIR = Path(str(APP_CONFIG.get("app", {}).get("cache_dir", f"~/.cac
 PROJECT_NAME = os.environ.get("PROJECT_NAME", str(PROJECT_CONFIG.get("name", "default")))
 PROJECT_DIR = PROJECT_CACHE_DIR / (re.sub(r"[^A-Za-z0-9._-]+", "-", PROJECT_NAME).strip("-") or "default")
 DATASET_DIR = PROJECT_DIR / "dataset"
+AUTH_STORE = AuthStore(PROJECT_CACHE_DIR / "auth.sqlite3")
 PROJECT_SOURCE = ""
 PROJECT_TOKEN = None
 PROJECT_AUTOSAVE = True
@@ -68,6 +75,7 @@ _shape_jobs = {}
 _cleanup_jobs = {}
 _project_save_jobs = {}
 _project_save_lock = threading.Lock()
+_collaboration_lock = threading.Lock()
 _shape_references = {}
 _job_cancel_events = {}
 _active_pools = {}
@@ -269,8 +277,9 @@ def save_project_document(document, autosave=False):
     temporary_path.replace(project_manifest_path())
     remote = bool(PROJECT_SOURCE and PROJECT_TOKEN)
     if remote:
+        read_collaboration()
         sync_hf_directory(DATASET_DIR, f"{PROJECT_SOURCE}/dataset", PROJECT_TOKEN)
-        sync_hf_directory(PROJECT_DIR, PROJECT_SOURCE, PROJECT_TOKEN, include=["project.json"])
+        sync_hf_directory(PROJECT_DIR, PROJECT_SOURCE, PROJECT_TOKEN, include=["project.json", "collaboration.json", "analysis-cache.json"])
     return {"saved": True, "project_id": PROJECT_ID, "autosave": autosave, "remote": remote}
 
 
@@ -536,6 +545,9 @@ def count_mask_islands(segmentation):
         previous = current
     return len({find(node) for node in range(len(parent))})
 
+
+HU_MOMENT_LABELS = {f"hu_moments_{index}": f"φ{index}" for index in range(1, 8)}
+FOURIER_DESCRIPTOR_LABELS = {f"fourier_descriptors_{index}": f"FD{index}" for index in range(1, 17)}
 
 SHAPE_DESCRIPTORS = {
     "aspect_ratio": "Aspect ratio",
@@ -1052,22 +1064,18 @@ def run_island_frequency(job_id, workers):
             }
             for category in data["categories"]
         ]
-        update_job(
-            job_id,
-            status="completed",
-            processed=total,
-            progress=100,
-            result={
-                "summary": build_island_summary(overall_values, time.monotonic() - started),
-                "categories": categories,
-                "inspection_groups": [
-                    {"islands": island_count, "instances": sorted(instances, key=lambda item: item["annotation_id"])}
-                    for island_count, instances in sorted(instance_groups.items())
-                ],
-                "workers": worker_count,
-                "available_cpus": available_cpu_count(),
-            },
-        )
+        result = {
+            "summary": build_island_summary(overall_values, time.monotonic() - started),
+            "categories": categories,
+            "inspection_groups": [
+                {"islands": island_count, "instances": sorted(instances, key=lambda item: item["annotation_id"])}
+                for island_count, instances in sorted(instance_groups.items())
+            ],
+            "workers": worker_count,
+            "available_cpus": available_cpu_count(),
+        }
+        cache_analysis_result("island-frequency", {}, result)
+        update_job(job_id, status="completed", processed=total, progress=100, result=result)
     except Exception as error:
         if _job_cancel_events.get(job_id) and _job_cancel_events[job_id].is_set():
             update_job(job_id, status="cancelled", elapsed_seconds=round(time.monotonic() - started, 3))
@@ -1137,7 +1145,7 @@ def build_shape_summary(values, elapsed):
         else:
             counts, edges = np.histogram(array, bins=min(20, max(1, len(array))))
         descriptors[key] = {
-            "label": SHAPE_DESCRIPTORS.get(base, base),
+            "label": HU_MOMENT_LABELS.get(key, FOURIER_DESCRIPTOR_LABELS.get(key, SHAPE_DESCRIPTORS.get(base, base))),
             "count": len(array),
             "mean": float(np.mean(array)),
             "std": float(np.std(array)),
@@ -1169,13 +1177,24 @@ def shape_range(arguments):
     return {"class_values": class_values, "processed": len(indices), "skipped": skipped}
 
 
-def run_shape_descriptors(job_id, descriptors, class_ids, workers):
+def run_shape_descriptors(job_id, descriptors, class_ids, sample_count, workers):
     global _shape_references
     started = time.monotonic()
     try:
         data = load_dataset()
-        selected = [annotation for annotation in data["annotations"] if not class_ids or str(annotation.get("category_id")) in class_ids]
-        selected_indices = [index for index, annotation in enumerate(data["annotations"]) if not class_ids or str(annotation.get("category_id")) in class_ids]
+        selected_indices_by_class = {}
+        for index, annotation in enumerate(data["annotations"]):
+            category_id = str(annotation.get("category_id"))
+            if not class_ids or category_id in class_ids:
+                selected_indices_by_class.setdefault(category_id, []).append(index)
+        randomizer = random.Random()
+        selected_indices = []
+        for category_indices in selected_indices_by_class.values():
+            if sample_count and len(category_indices) > sample_count:
+                selected_indices.extend(randomizer.sample(category_indices, sample_count))
+            else:
+                selected_indices.extend(category_indices)
+        selected = [data["annotations"][index] for index in selected_indices]
         total = len(selected_indices)
         worker_count = max(1, min(available_cpu_count(), workers or available_cpu_count(), total or 1))
         _shape_references = {}
@@ -1229,7 +1248,9 @@ def run_shape_descriptors(job_id, descriptors, class_ids, workers):
             for category in data["categories"]
             if not class_ids or str(category["id"]) in class_ids
         ]
-        update_shape_job(job_id, status="completed", processed=total, progress=100, result={"descriptors": descriptors, "class_ids": class_ids, "categories": categories, "skipped": skipped, "processed": total, "workers": worker_count})
+        result = {"descriptors": descriptors, "class_ids": class_ids, "sample_count": sample_count, "categories": categories, "skipped": skipped, "processed": total, "workers": worker_count}
+        cache_analysis_result("shape-descriptors", {"descriptors": descriptors, "class_ids": class_ids, "sample_count": sample_count}, result)
+        update_shape_job(job_id, status="completed", processed=total, progress=100, result=result)
     except Exception:
         if _job_cancel_events.get(job_id) and _job_cancel_events[job_id].is_set():
             update_shape_job(job_id, status="cancelled", elapsed_seconds=round(time.monotonic() - started, 3))
@@ -1247,6 +1268,7 @@ def update_shape_job(job_id, **values):
 def start_shape_descriptor_job(payload):
     descriptors = payload.get("descriptors", [])
     class_ids = [str(value) for value in payload.get("class_ids", [])]
+    sample_count = max(0, int(payload.get("sample_count", 0)))
     invalid = [descriptor for descriptor in descriptors if descriptor not in SHAPE_DESCRIPTORS]
     if not descriptors or invalid:
         raise ValueError("Select at least one valid descriptor")
@@ -1256,8 +1278,8 @@ def start_shape_descriptor_job(payload):
                 return job["id"]
         job_id = uuid.uuid4().hex
         _job_cancel_events[job_id] = threading.Event()
-        _shape_jobs[job_id] = {"id": job_id, "status": "queued", "processed": 0, "total": 0, "progress": 0, "workers": 0, "created_at": time.time(), "descriptors": descriptors, "class_ids": class_ids}
-    threading.Thread(target=run_shape_descriptors, args=(job_id, descriptors, class_ids, WORKERS), daemon=True).start()
+        _shape_jobs[job_id] = {"id": job_id, "status": "queued", "processed": 0, "total": 0, "progress": 0, "workers": 0, "created_at": time.time(), "descriptors": descriptors, "class_ids": class_ids, "sample_count": sample_count}
+    threading.Thread(target=run_shape_descriptors, args=(job_id, descriptors, class_ids, sample_count, WORKERS), daemon=True).start()
     return job_id
 
 
@@ -1330,7 +1352,9 @@ def run_excess_island_job(job_id, filters):
         finally:
             pool.terminate()
             pool.join()
-        update_cleanup_job(job_id, status="completed", processed=total, progress=100, result={"filters": filters, "candidates": sorted(candidates, key=lambda item: item["annotation_id"]), "elapsed_seconds": round(time.monotonic() - started, 3), "workers": available_cpu_count()})
+        result = {"filters": filters, "candidates": sorted(candidates, key=lambda item: item["annotation_id"]), "elapsed_seconds": round(time.monotonic() - started, 3), "workers": available_cpu_count()}
+        cache_analysis_result("excess-islands", filters, result)
+        update_cleanup_job(job_id, status="completed", processed=total, progress=100, result=result)
     except Exception as error:
         update_cleanup_job(job_id, status="error", error=str(error), elapsed_seconds=round(time.monotonic() - started, 3))
 
@@ -1378,6 +1402,229 @@ def get_island_frequency_job(job_id):
         return dict(job) if job else None
 
 
+def public_user(user):
+    return {"id": user["user_id"], "username": user["username"], "role": user["role"], "csrf_token": user["csrf_token"]}
+
+
+def request_user(handler):
+    cookie = SimpleCookie()
+    cookie.load(handler.headers.get("Cookie", ""))
+    session_cookie = cookie.get("session_id")
+    return AUTH_STORE.get_session(session_cookie.value if session_cookie else "")
+
+
+def require_user(handler, manager=False):
+    user = request_user(handler)
+    if not user:
+        handler.send_error(HTTPStatus.UNAUTHORIZED, "Login required")
+        return None
+    if manager and user["role"] != "manager":
+        handler.send_error(HTTPStatus.FORBIDDEN, "Manager access required")
+        return None
+    handler.current_user = user
+    return user
+
+
+def require_csrf(handler, user):
+    if handler.headers.get("X-CSRF-Token") != user["csrf_token"]:
+        handler.send_error(HTTPStatus.FORBIDDEN, "Invalid CSRF token")
+        return False
+    return True
+
+
+def collaboration_path():
+    return PROJECT_DIR / "collaboration.json"
+
+
+def analysis_cache_path():
+    return PROJECT_DIR / "analysis-cache.json"
+
+
+def analysis_cache_key(tool, parameters=None):
+    normalized = json.dumps(parameters or {}, sort_keys=True, separators=(",", ":"))
+    return f"{tool}:{hashlib.sha256(normalized.encode('utf-8')).hexdigest()[:16]}"
+
+
+def read_analysis_cache():
+    try:
+        with analysis_cache_path().open(encoding="utf-8") as file:
+            data = json.load(file)
+    except (OSError, json.JSONDecodeError):
+        data = {}
+    return data if isinstance(data, dict) else {}
+
+
+def get_cached_analysis(tool, parameters=None, latest=False):
+    cache = read_analysis_cache()
+    if latest:
+        for key, entry in reversed(list(cache.items())):
+            if key.startswith(f"{tool}:"):
+                return entry.get("result")
+        return None
+    entry = cache.get(analysis_cache_key(tool, parameters))
+    return entry.get("result") if entry else None
+
+
+def cache_analysis_result(tool, parameters, result):
+    analysis_cache_path().parent.mkdir(parents=True, exist_ok=True)
+    cache = read_analysis_cache()
+    cache[analysis_cache_key(tool, parameters)] = {"parameters": parameters, "result": result, "cached_at": time.time()}
+    temporary = analysis_cache_path().with_suffix(".json.tmp")
+    temporary.write_text(json.dumps(cache, separators=(",", ":")), encoding="utf-8")
+    temporary.replace(analysis_cache_path())
+    return result
+
+
+def read_collaboration():
+    data = None
+    try:
+        with collaboration_path().open(encoding="utf-8") as file:
+            data = json.load(file)
+    except (OSError, json.JSONDecodeError):
+        data = None
+    if not isinstance(data, dict) or not isinstance(data.get("frames"), dict):
+        data = {"revision": 1, "frames": {}, "workspaces": {}, "accounts": {}}
+    data.setdefault("workspaces", {})
+    data.setdefault("accounts", {})
+    for image in load_dataset()["images"]:
+        data["frames"].setdefault(str(image["id"]), {"state": "waiting", "assigned_to": None, "updated_at": time.time()})
+    return data
+
+
+def write_collaboration(data):
+    collaboration_path().parent.mkdir(parents=True, exist_ok=True)
+    with _collaboration_lock:
+        temporary = collaboration_path().with_suffix(".json.tmp")
+        temporary.write_text(json.dumps(data, separators=(",", ":")), encoding="utf-8")
+        temporary.replace(collaboration_path())
+    return data
+
+
+def can_access_image(user, image_id):
+    if user["role"] == "manager":
+        return True
+    frame = read_collaboration()["frames"].get(str(image_id), {})
+    return frame.get("assigned_to") == user["user_id"]
+
+
+def frame_records(user):
+    data = load_dataset()
+    collaboration = read_collaboration()
+    records = []
+    for image in data["summary"]:
+        frame = collaboration["frames"].get(str(image["id"]), {"state": "waiting", "assigned_to": None})
+        if user["role"] == "annotator" and frame.get("assigned_to") != user["user_id"]:
+            continue
+        assigned = AUTH_STORE.get_user(frame["assigned_to"]) if frame.get("assigned_to") else None
+        records.append({**image, "frame_state": frame.get("state", "waiting"), "assigned_to": frame.get("assigned_to"), "assigned_name": assigned["username"] if assigned else None})
+    return records
+
+
+def account_payload(user):
+    return {key: user[key] for key in ("id", "username", "role", "active", "created_at", "updated_at")}
+
+
+def sync_project_accounts():
+    data = read_collaboration()
+    data["accounts"] = {user["id"]: account_payload(user) for user in AUTH_STORE.list_users()}
+    return write_collaboration(data)
+
+
+def create_account(payload):
+    role = payload.get("role", "annotator")
+    user = AUTH_STORE.create_user(payload.get("username", ""), payload.get("password", ""), role, bool(payload.get("active", True)))
+    sync_project_accounts()
+    return account_payload(user)
+
+
+def update_account(payload):
+    user = AUTH_STORE.get_user(payload.get("user_id", ""))
+    if not user:
+        raise ValueError("Account not found")
+    if "active" in payload:
+        user = AUTH_STORE.set_active(user["id"], bool(payload["active"]))
+        if not user["active"]:
+            AUTH_STORE.delete_user_sessions(user["id"])
+    if payload.get("password"):
+        user = AUTH_STORE.set_password(user["id"], payload["password"])
+        AUTH_STORE.delete_user_sessions(user["id"])
+    sync_project_accounts()
+    return account_payload(user)
+
+
+def assign_frames(image_ids, annotator_id):
+    annotator = AUTH_STORE.get_user(annotator_id)
+    if not annotator or not annotator["active"] or annotator["role"] != "annotator":
+        raise ValueError("Active annotator not found")
+    data = read_collaboration()
+    valid_ids = {str(image["id"]) for image in load_dataset()["images"]}
+    for image_id in image_ids:
+        if str(image_id) not in valid_ids:
+            raise ValueError(f"Unknown image ID: {image_id}")
+        data["frames"][str(image_id)].update({"assigned_to": annotator_id, "state": "waiting", "updated_at": time.time(), "updated_by": None})
+    data["revision"] = int(data.get("revision", 0)) + 1
+    return write_collaboration(data)
+
+
+def set_frame_state(user, image_id, state):
+    if state not in {"waiting", "annotated", "reviewed"}:
+        raise ValueError("Invalid frame state")
+    data = read_collaboration()
+    frame = data["frames"].get(str(image_id))
+    if not frame:
+        raise ValueError("Unknown image ID")
+    if user["role"] == "annotator":
+        if frame.get("assigned_to") != user["user_id"] or state != "annotated":
+            raise PermissionError("Annotators can only mark their assigned frame annotated")
+    elif state == "reviewed" and frame.get("state") != "annotated":
+        raise ValueError("Only annotated frames can be reviewed")
+    frame.update({"state": state, "updated_at": time.time(), "updated_by": user["user_id"]})
+    data["revision"] = int(data.get("revision", 0)) + 1
+    return write_collaboration(data)
+
+
+def save_frame_workspace(user, image_id, workspace):
+    if not can_access_image(user, image_id):
+        raise PermissionError("Frame is not assigned to this annotator")
+    data = read_collaboration()
+    key = str(image_id)
+    if key not in data["frames"]:
+        raise ValueError("Unknown image ID")
+    data["workspaces"][key] = {
+        "workspace": workspace,
+        "updated_at": time.time(),
+        "updated_by": user["user_id"],
+    }
+    data["revision"] = int(data.get("revision", 0)) + 1
+    return write_collaboration(data)
+
+
+def frame_workspace(user, image_id):
+    if not can_access_image(user, image_id):
+        raise PermissionError("Frame is not assigned to this annotator")
+    return read_collaboration()["workspaces"].get(str(image_id), {"workspace": {}})
+
+
+def ensure_bootstrap_manager():
+    if AUTH_STORE.has_users():
+        sync_project_accounts()
+        return
+    username = os.environ.get("MANAGER_USERNAME", "manager")
+    password = os.environ.get("MANAGER_PASSWORD")
+    generated = False
+    if not password and sys.stdin.isatty():
+        password = getpass.getpass(f"Create manager account '{username}' password: ")
+    if not password:
+        password = secrets.token_urlsafe(12)
+        generated = True
+    user = AUTH_STORE.create_user(username, password, "manager")
+    sync_project_accounts()
+    if generated:
+        print(f"Bootstrap manager: {user['username']} / {password}", flush=True)
+    else:
+        print(f"Created manager account: {user['username']}", flush=True)
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -1389,6 +1636,69 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urlparse(self.path).path
+        if path == "/api/auth/login":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if length > 100_000:
+                    raise ValueError("Login request is too large")
+                payload = json.loads(self.rfile.read(length) or b"{}")
+                user = AUTH_STORE.authenticate(payload.get("username", ""), payload.get("password", ""))
+                if not user:
+                    self.send_error(HTTPStatus.UNAUTHORIZED, "Invalid username or password")
+                    return
+                token, csrf_token = AUTH_STORE.create_session(user["id"])
+                body = json.dumps({"user": {"id": user["id"], "username": user["username"], "role": user["role"]}, "csrf_token": csrf_token}, separators=(",", ":")).encode("utf-8")
+                self.send_bytes(body, "application/json; charset=utf-8", {"Set-Cookie": f"session_id={token}; HttpOnly; SameSite=Lax; Path=/"})
+            except (OSError, ValueError, TypeError, json.JSONDecodeError) as error:
+                self.send_error(HTTPStatus.BAD_REQUEST, str(error))
+            return
+        if path == "/api/auth/logout":
+            user = request_user(self)
+            if user:
+                AUTH_STORE.delete_session(user["token_hash"])
+            self.send_bytes(b'{"logged_out":true}', "application/json; charset=utf-8", {"Set-Cookie": "session_id=; Max-Age=0; HttpOnly; SameSite=Lax; Path=/"})
+            return
+        manager_paths = {"/api/project/configure", "/api/project/save", "/api/project/reset", "/api/projects/list", "/api/project/open", "/api/accounts", "/api/accounts/update", "/api/project/assign", "/api/tools/island-frequency/start", "/api/tools/excess-islands/start", "/api/tools/shape-descriptors/start", "/api/tools/island-frequency/cancel", "/api/tools/excess-islands/cancel", "/api/tools/shape-descriptors/cancel", "/api/export"}
+        if path.startswith("/api/"):
+            user = require_user(self, manager=path in manager_paths)
+            if not user:
+                return
+            if not require_csrf(self, user):
+                return
+        if path in {"/api/frame-workspace"}:
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if length > 20_000_000:
+                    raise ValueError("Frame workspace request is too large")
+                payload = json.loads(self.rfile.read(length) or b"{}")
+                result = save_frame_workspace(request_user(self), payload.get("image_id"), payload.get("workspace", {}))
+                self.send_json({"saved": True, "revision": result.get("revision", 0)})
+            except PermissionError as error:
+                self.send_error(HTTPStatus.FORBIDDEN, str(error))
+            except (OSError, RuntimeError, ValueError, TypeError, json.JSONDecodeError) as error:
+                self.send_error(HTTPStatus.BAD_REQUEST, str(error))
+            return
+        if path in {"/api/accounts", "/api/accounts/update", "/api/project/assign", "/api/frame-state"}:
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if length > 1_000_000:
+                    raise ValueError("Account request is too large")
+                payload = json.loads(self.rfile.read(length) or b"{}")
+                if path == "/api/accounts":
+                    result = create_account(payload) if self.command == "POST" else {"users": [account_payload(user) for user in AUTH_STORE.list_users()]}
+                elif path == "/api/accounts/update":
+                    result = update_account(payload)
+                elif path == "/api/project/assign":
+                    assign_frames(payload.get("image_ids", []), payload.get("user_id"))
+                    result = {"assigned": True, "frames": frame_records(request_user(self))}
+                else:
+                    result = set_frame_state(request_user(self), payload.get("image_id"), payload.get("state"))
+                self.send_json(result)
+            except PermissionError as error:
+                self.send_error(HTTPStatus.FORBIDDEN, str(error))
+            except (OSError, RuntimeError, ValueError, TypeError, json.JSONDecodeError) as error:
+                self.send_error(HTTPStatus.BAD_REQUEST, str(error))
+            return
         if path in {"/api/project/configure", "/api/project/save", "/api/project/reset", "/api/projects/list", "/api/project/open"}:
             try:
                 length = int(self.headers.get("Content-Length", "0"))
@@ -1498,6 +1808,53 @@ class Handler(BaseHTTPRequestHandler):
     def handle_request(self, send_body=True):
         parsed = urlparse(self.path)
         path = unquote(parsed.path)
+        if path.startswith("/api/") and path != "/api/health":
+            if path == "/api/auth/me":
+                user = request_user(self)
+                if not user:
+                    self.send_error(HTTPStatus.UNAUTHORIZED, "Login required")
+                    return
+                self.send_json({"user": {"id": user["user_id"], "username": user["username"], "role": user["role"]}, "csrf_token": user["csrf_token"]}, send_body)
+                return
+            if path == "/api/accounts":
+                user = require_user(self, manager=True)
+                if not user:
+                    return
+                self.send_json({"users": [account_payload(item) for item in AUTH_STORE.list_users()]}, send_body)
+                return
+            manager_paths = {"/api/project", "/api/project/config", "/api/project/save/status", "/api/tools/excess-islands/status", "/api/tools/shape-descriptors/status", "/api/tools/island-frequency/status", "/api/tools/excess-islands/result", "/api/tools/shape-descriptors/result", "/api/tools/island-frequency/result"}
+            user = require_user(self, manager=path in manager_paths)
+            if not user:
+                return
+            if path in {"/api/tools/excess-islands/result", "/api/tools/shape-descriptors/result", "/api/tools/island-frequency/result"}:
+                tool = path.removeprefix("/api/tools/").removesuffix("/result")
+                result = get_cached_analysis(tool, latest=True)
+                if result is None:
+                    self.send_error(HTTPStatus.NOT_FOUND, "No cached analysis result")
+                else:
+                    self.send_json({"result": result}, send_body)
+                return
+            if path == "/api/project/frames":
+                self.send_json({"frames": frame_records(user)}, send_body)
+                return
+            if path == "/api/frame-workspace":
+                try:
+                    image_id = int(parse_qs(parsed.query).get("image_id", [""])[0])
+                    self.send_json(frame_workspace(user, image_id), send_body)
+                except PermissionError as error:
+                    self.send_error(HTTPStatus.FORBIDDEN, str(error))
+                except (TypeError, ValueError) as error:
+                    self.send_error(HTTPStatus.BAD_REQUEST, str(error))
+                return
+            if path.startswith("/api/media/") or path.startswith("/api/image/"):
+                try:
+                    image_id = int(path.rsplit("/", 1)[-1])
+                except ValueError:
+                    self.send_error(HTTPStatus.NOT_FOUND)
+                    return
+                if not can_access_image(user, image_id):
+                    self.send_error(HTTPStatus.FORBIDDEN, "Frame is not assigned to this annotator")
+                    return
         try:
             if path == "/api/project/save/status":
                 job_id = parse_qs(parsed.query).get("job_id", [""])[0]
@@ -1523,7 +1880,7 @@ class Handler(BaseHTTPRequestHandler):
                     "info": data["info"],
                     "categories": data["categories"],
                     "category_colors": data["category_colors"],
-                    "images": data["summary"],
+                    "images": frame_records(user),
                     "annotation_count": len(data["annotations"]),
                     "max_annotation_id": max((annotation["id"] for annotation in data["annotations"]), default=0),
                     "source": DATASET_SOURCE,
@@ -1547,6 +1904,7 @@ class Handler(BaseHTTPRequestHandler):
                     "image_url": f"/api/media/{image_id}",
                     "source_url": None if USE_LOCAL_DATASET else IMAGE_URL.format(filename=image["file_name"]),
                     "annotations": data["annotation_index"].get(image_id, []),
+                    "max_annotation_id": max((annotation["id"] for annotation in data["annotations"]), default=0),
                     "categories": data["categories"],
                     "category_colors": data["category_colors"],
                 }
@@ -1725,6 +2083,7 @@ def main():
     if args.image_url and "{filename}" not in args.image_url:
         parser.error("--image-url must contain {filename}")
     WORKERS = args.workers
+    ensure_bootstrap_manager()
     try:
         remote_coco_url = args.coco_url or os.environ.get("COCO_URL")
         remote_image_url = args.image_url or os.environ.get("IMAGE_URL")

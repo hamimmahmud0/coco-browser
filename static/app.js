@@ -1,5 +1,9 @@
 const state = {
+  currentUser: null,
+  csrfToken: "",
   dataset: null,
+  frames: [],
+  frameStates: {},
   images: [],
   filtered: [],
   current: null,
@@ -76,6 +80,8 @@ const elements = {
   showBoxes: document.querySelector("#show-boxes"),
   showMasks: document.querySelector("#show-masks"),
   drawMode: document.querySelector("#draw-mode"),
+  markAnnotated: document.querySelector("#mark-annotated"),
+  markReviewed: document.querySelector("#mark-reviewed"),
   canvasArea: document.querySelector("#canvas-area"),
   stage: document.querySelector("#stage"),
   image: document.querySelector("#image"),
@@ -86,6 +92,30 @@ const elements = {
   annotationStatus: document.querySelector("#annotation-status"),
   objectStatus: document.querySelector("#object-status"),
   saveState: document.querySelector("#save-state"),
+  currentUser: document.querySelector("#current-user"),
+  logoutButton: document.querySelector("#logout-button"),
+  accountsModal: document.querySelector("#accounts-modal"),
+  closeAccountsModal: document.querySelector("#close-accounts-modal"),
+  manageAccountsButton: document.querySelector("#manage-accounts-button"),
+  accountsList: document.querySelector("#accounts-list"),
+  accountUsername: document.querySelector("#account-username"),
+  accountPassword: document.querySelector("#account-password"),
+  accountRole: document.querySelector("#account-role"),
+  createAccount: document.querySelector("#create-account"),
+  accountsStatus: document.querySelector("#accounts-status"),
+  assignModal: document.querySelector("#assign-modal"),
+  closeAssignModal: document.querySelector("#close-assign-modal"),
+  assignFramesButton: document.querySelector("#assign-frames-button"),
+  assignAnnotator: document.querySelector("#assign-annotator"),
+  assignFramesList: document.querySelector("#assign-frames-list"),
+  assignSelectedFrames: document.querySelector("#assign-selected-frames"),
+  assignStatus: document.querySelector("#assign-status"),
+  loginModal: document.querySelector("#login-modal"),
+  loginForm: document.querySelector("#login-form"),
+  loginUsername: document.querySelector("#login-username"),
+  loginPassword: document.querySelector("#login-password"),
+  loginStatus: document.querySelector("#login-status"),
+  loginSubmit: document.querySelector("#login-submit"),
   newProjectButton: document.querySelector("#new-project-button"),
   projectButton: document.querySelector("#project-button"),
   projectModal: document.querySelector("#project-modal"),
@@ -125,6 +155,10 @@ const elements = {
   stopToolTask: document.querySelector("#stop-tool-task"),
   toolModal: document.querySelector("#tool-modal"),
   closeToolModal: document.querySelector("#close-tool-modal"),
+  recalculateIslandFrequency: document.querySelector("#recalculate-island-frequency"),
+  copyShapeResult: document.querySelector("#copy-shape-result"),
+  recalculateShapeDescriptors: document.querySelector("#recalculate-shape-descriptors"),
+  recalculateExcessIslands: document.querySelector("#recalculate-excess-islands"),
   islandSummary: document.querySelector("#island-summary"),
   frequencyChart: document.querySelector("#frequency-chart"),
   frequencyTotal: document.querySelector("#frequency-total"),
@@ -174,10 +208,9 @@ const elements = {
   closeShapeModal: document.querySelector("#close-shape-modal"),
   shapeSetup: document.querySelector("#shape-setup"),
   shapeResults: document.querySelector("#shape-results"),
-  shapeDescriptorList: document.querySelector("#shape-descriptor-list"),
+  shapeDescriptorSelect: document.querySelector("#shape-descriptor-select"),
   shapeClassList: document.querySelector("#shape-class-list"),
-  shapeDescriptorsAll: document.querySelector("#shape-descriptors-all"),
-  shapeDescriptorsNone: document.querySelector("#shape-descriptors-none"),
+  shapeSampleCount: document.querySelector("#shape-sample-count"),
   shapeClassesAll: document.querySelector("#shape-classes-all"),
   shapeClassesNone: document.querySelector("#shape-classes-none"),
   shapeSelectionSummary: document.querySelector("#shape-selection-summary"),
@@ -210,9 +243,9 @@ const toolRegistry = {
 };
 
 function setRibbonCategory(category) {
+  if (state.currentUser?.role === "annotator" && ["project", "dataset", "review", "analysis", "accounts", "assign"].includes(category)) category = "edit";
   state.ribbonCategory = category;
-upgradeToggleButtons();
-document.querySelectorAll("[data-ribbon-tab]").forEach((tab) => {
+  document.querySelectorAll("[data-ribbon-tab]").forEach((tab) => {
     const active = tab.dataset.ribbonTab === category;
     tab.classList.toggle("active", active);
     tab.setAttribute("aria-selected", String(active));
@@ -224,7 +257,7 @@ document.querySelectorAll("[data-ribbon-tab]").forEach((tab) => {
 }
 
 function moveRibbonTab(category, offset) {
-  const tabs = [...document.querySelectorAll("[data-ribbon-tab]")];
+  const tabs = [...document.querySelectorAll("[data-ribbon-tab]")].filter((tab) => !tab.hidden);
   const current = tabs.findIndex((tab) => tab.dataset.ribbonTab === category);
   const next = tabs[(current + offset + tabs.length) % tabs.length];
   setRibbonCategory(next.dataset.ribbonTab);
@@ -307,6 +340,21 @@ function buildProjectDocument() {
 function scheduleProjectAutosave() {
   if (!state.project.autosave) return;
   clearTimeout(projectSaveTimer);
+  if (state.currentUser?.role === "annotator") {
+    if (!state.current) return;
+    projectSaveTimer = setTimeout(async () => {
+      try {
+        await request("/api/frame-workspace", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ image_id: state.current.id, workspace: captureHistoryState() }),
+        });
+      } catch (error) {
+        showToast(error.message);
+      }
+    }, 1200);
+    return;
+  }
   projectSaveTimer = setTimeout(() => saveProjectNow(true), 1500);
 }
 
@@ -410,6 +458,7 @@ function applyProjectDocument(projectDocument) {
 }
 
 async function loadProjectDocument() {
+  if (state.currentUser?.role === "annotator") return null;
   const configResponse = await fetch("/api/project/config");
   if (configResponse.ok) {
     const config = await configResponse.json();
@@ -541,6 +590,91 @@ async function openSelectedProject() {
     elements.openProjectStatus.textContent = error.message;
   } finally {
     elements.openSelectedProject.disabled = false;
+  }
+}
+
+function closeAccountsModal() {
+  elements.accountsModal.hidden = true;
+}
+
+async function openAccountsManager() {
+  elements.accountsStatus.textContent = "";
+  elements.accountsModal.hidden = false;
+  await loadAccounts();
+}
+
+async function loadAccounts() {
+  try {
+    const response = await request("/api/accounts");
+    const result = await response.json();
+    elements.accountsList.replaceChildren();
+    for (const user of result.users) {
+      const row = element("div", "account-row");
+      row.append(element("span", "", `${user.username} · ${user.role}`), element("small", "", user.active ? "Active" : "Disabled"));
+      elements.accountsList.append(row);
+    }
+  } catch (error) {
+    elements.accountsStatus.textContent = error.message;
+  }
+}
+
+async function createAccount() {
+  try {
+    await request("/api/accounts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: elements.accountUsername.value.trim(), password: elements.accountPassword.value, role: elements.accountRole.value }),
+    });
+    elements.accountUsername.value = "";
+    elements.accountPassword.value = "";
+    elements.accountsStatus.textContent = "Account created";
+    await loadAccounts();
+  } catch (error) {
+    elements.accountsStatus.textContent = error.message;
+  }
+}
+
+function closeAssignModal() {
+  elements.assignModal.hidden = true;
+}
+
+async function openAssignManager() {
+  elements.assignStatus.textContent = "";
+  elements.assignModal.hidden = false;
+  try {
+    const [accountsResponse, framesResponse] = await Promise.all([request("/api/accounts"), request("/api/project/frames")]);
+    const accounts = (await accountsResponse.json()).users.filter((user) => user.active && user.role === "annotator");
+    const frames = (await framesResponse.json()).frames.filter((frame) => frame.frame_state === "waiting");
+    elements.assignAnnotator.replaceChildren(...accounts.map((user) => {
+      const option = document.createElement("option");
+      option.value = user.id;
+      option.textContent = user.username;
+      return option;
+    }));
+    elements.assignFramesList.replaceChildren(...frames.map((frame) => {
+      const option = document.createElement("option");
+      option.value = frame.id;
+      option.textContent = `${frame.id} · ${frame.file_name} · ${frame.frame_state}`;
+      return option;
+    }));
+  } catch (error) {
+    elements.assignStatus.textContent = error.message;
+  }
+}
+
+async function assignSelectedFrames() {
+  const userId = elements.assignAnnotator.value;
+  const imageIds = [...elements.assignFramesList.selectedOptions].map((option) => Number(option.value));
+  if (!userId || !imageIds.length) {
+    elements.assignStatus.textContent = "Select an annotator and at least one frame.";
+    return;
+  }
+  try {
+    await request("/api/project/assign", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ user_id: userId, image_ids: imageIds }) });
+    elements.assignStatus.textContent = `Assigned ${imageIds.length} frame${imageIds.length === 1 ? "" : "s"}`;
+    await loadDataset();
+  } catch (error) {
+    elements.assignStatus.textContent = error.message;
   }
 }
 
@@ -701,8 +835,11 @@ function showToast(message) {
   toastTimer = setTimeout(() => elements.toast.classList.remove("visible"), 3200);
 }
 
-async function request(url, options) {
-  const response = await fetch(url, options);
+async function request(url, options = {}) {
+  const method = (options.method || "GET").toUpperCase();
+  const headers = { ...(options.headers || {}) };
+  if (!["GET", "HEAD", "OPTIONS"].includes(method) && state.csrfToken) headers["X-CSRF-Token"] = state.csrfToken;
+  const response = await fetch(url, { ...options, headers, credentials: "same-origin" });
   if (!response.ok) {
     const message = await response.text();
     throw new Error(message || `Request failed: ${response.status}`);
@@ -716,7 +853,17 @@ function wait(milliseconds) {
 
 function formatNumber(value) {
   const number = Number(value);
-  return Number.isFinite(number) ? number.toLocaleString(undefined, { maximumFractionDigits: 2 }) : String(value);
+  if (!Number.isFinite(number)) return String(value);
+  const absolute = Math.abs(number);
+  const units = [[1e12, "T"], [1e9, "B"], [1e6, "M"], [1e3, "K"]];
+  for (const [threshold, suffix] of units) {
+    if (absolute >= threshold) {
+      const scaled = absolute / threshold;
+      const text = scaled < 10 ? scaled.toFixed(1).replace(/\.0$/, "") : String(Math.round(scaled));
+      return `${number < 0 ? "-" : ""}${text}${suffix}`;
+    }
+  }
+  return absolute < 10 ? String(Number(number.toFixed(2))) : String(Math.round(number));
 }
 
 function updateToolProgress(label, job) {
@@ -726,13 +873,24 @@ function updateToolProgress(label, job) {
   elements.toolProgressCount.textContent = `${formatNumber(job.processed || 0)} / ${formatNumber(job.total || 0)}`;
 }
 
-async function runIslandFrequency() {
+async function runIslandFrequency(recalculate = false) {
   if (state.activeToolJob) {
     showToast("Island Frequency is already running");
     return;
   }
+  if (!recalculate) {
+    try {
+      const response = await request("/api/tools/island-frequency/result");
+      renderIslandResults((await response.json()).result);
+      showToast("Loaded cached Island Frequency result");
+      return;
+    } catch (error) {
+      if (!error.message.includes("404")) throw error;
+    }
+  }
   const tool = toolRegistry.islandFrequency;
-  elements.islandFrequencyTool.closest("details").open = false;
+  const toolsMenu = elements.islandFrequencyTool.closest("details");
+  if (toolsMenu) toolsMenu.open = false;
   elements.toolProgressLabel.textContent = tool.label;
   elements.toolProgressBar.value = 0;
   elements.toolProgressCount.textContent = "Starting…";
@@ -776,14 +934,14 @@ const shapeDescriptorCatalog = [
   ["convexity", "Convexity", "Boundary regularity; scale and rotation invariant"],
   ["eccentricity", "Eccentricity", "Second-moment elongation"],
   ["normalized_perimeter", "Normalized perimeter", "P/√A; boundary complexity"],
-  ["hu_moments", "Hu moments", "7 global Hu moment values"],
+  ["hu_moments", "Hu moments (φ1–φ7)", "Seven Hu moment invariants"],
   ["zernike_moments", "Zernike moments", "9 complex-moment magnitudes"],
-  ["fourier_descriptors", "Fourier descriptors", "16 normalized boundary frequencies"],
+  ["fourier_descriptors", "Fourier descriptors (FD1–FD16)", "Sixteen normalized boundary frequency coefficients"],
   ["hausdorff_distance", "Hausdorff distance", "Compared with first valid class reference"],
   ["chamfer_distance", "Chamfer distance", "Compared with first valid class reference"],
 ];
 
-function openShapeDescriptorLab() {
+async function openShapeDescriptorLab() {
   renderShapeSetup();
   state.shapeResult = null;
   elements.shapeRunProgress.hidden = true;
@@ -792,15 +950,33 @@ function openShapeDescriptorLab() {
   elements.shapeSetup.hidden = false;
   elements.shapeResults.hidden = true;
   elements.shapeModal.hidden = false;
+  try {
+    const response = await request("/api/tools/shape-descriptors/result");
+    renderShapeResults((await response.json()).result);
+    elements.shapeSetup.hidden = true;
+    elements.shapeResults.hidden = false;
+    showToast("Loaded cached Shape Descriptor result");
+  } catch (error) {
+    if (!error.message.includes("404")) showToast(error.message);
+  }
   document.querySelector(".tools-menu")?.removeAttribute("open");
 }
 
-function openExcessIslandFilter() {
+async function openExcessIslandFilter() {
   elements.excessIslandSetup.hidden = false;
   elements.excessIslandResults.hidden = true;
   elements.excessIslandProgress.hidden = true;
   elements.excessIslandStop.hidden = true;
   elements.excessIslandModal.hidden = false;
+  try {
+    const response = await request("/api/tools/excess-islands/result");
+    renderExcessIslandResults((await response.json()).result);
+    elements.excessIslandSetup.hidden = true;
+    elements.excessIslandResults.hidden = false;
+    showToast("Loaded cached Excess Island result");
+  } catch (error) {
+    if (!error.message.includes("404")) showToast(error.message);
+  }
   updateExcessIslandSelection();
   document.querySelector(".tools-menu")?.removeAttribute("open");
 }
@@ -813,7 +989,7 @@ function updateExcessIslandSelection() {
   elements.runExcessIslands.disabled = !filters.length;
 }
 
-async function runExcessIslandFilter() {
+async function runExcessIslandFilter(recalculate = false) {
   if (state.activeCleanupJob) return;
   const filters = {
     island_range: elements.excessRangeEnabled.checked,
@@ -823,6 +999,21 @@ async function runExcessIslandFilter() {
     max_area_ratio: Number(elements.excessMaxAreaRatio.value),
   };
   if (!filters.island_range && !filters.area_ratio) return;
+  if (!recalculate) {
+    try {
+      const response = await request("/api/tools/excess-islands/result");
+      const cached = (await response.json()).result;
+      if (JSON.stringify(cached.filters) === JSON.stringify(filters)) {
+        renderExcessIslandResults(cached);
+        elements.excessIslandSetup.hidden = true;
+        elements.excessIslandResults.hidden = false;
+        showToast("Loaded cached Excess Island result");
+        return;
+      }
+    } catch (error) {
+      if (!error.message.includes("404")) throw error;
+    }
+  }
   elements.runExcessIslands.disabled = true;
   elements.excessIslandProgress.hidden = false;
   elements.excessIslandStop.hidden = false;
@@ -909,16 +1100,12 @@ function closeShapeModal() {
 
 function renderShapeSetup() {
   if (!state.dataset) return;
-  if (!elements.shapeDescriptorList.children.length) {
-    for (const [key, label, note] of shapeDescriptorCatalog) {
-      const labelNode = element("div", "shape-check");
-      const input = upgradeToggleButton(element("button", "toggle-button"));
-      input.dataset.descriptor = key;
-      input.addEventListener("change", updateShapeSelectionSummary);
-      const copy = element("span");
-      copy.append(element("strong", "", label), element("small", "", note));
-      labelNode.append(input, copy);
-      elements.shapeDescriptorList.append(labelNode);
+  if (!elements.shapeDescriptorSelect.options.length) {
+    for (const [key, label] of shapeDescriptorCatalog) {
+      const option = document.createElement("option");
+      option.value = key;
+      option.textContent = label;
+      elements.shapeDescriptorSelect.append(option);
     }
   }
   if (!elements.shapeClassList.children.length) {
@@ -937,7 +1124,7 @@ function renderShapeSetup() {
 }
 
 function selectedShapeDescriptors() {
-  return [...elements.shapeDescriptorList.querySelectorAll(".toggle-button.active")].map((input) => input.dataset.descriptor);
+  return elements.shapeDescriptorSelect.value ? [elements.shapeDescriptorSelect.value] : [];
 }
 
 function selectedShapeClasses() {
@@ -947,14 +1134,33 @@ function selectedShapeClasses() {
 function updateShapeSelectionSummary() {
   const descriptors = selectedShapeDescriptors();
   const classes = selectedShapeClasses();
-  elements.shapeSelectionSummary.textContent = `${descriptors.length} descriptor${descriptors.length === 1 ? "" : "s"} · ${classes.length} class${classes.length === 1 ? "" : "es"} selected`;
+  const sampleCount = Math.max(0, Number(elements.shapeSampleCount.value) || 0);
+  elements.shapeSelectionSummary.textContent = `${descriptors.length} descriptor${descriptors.length === 1 ? "" : "s"} · ${classes.length} class${classes.length === 1 ? "" : "es"} · ${sampleCount ? `${formatNumber(sampleCount)}/class` : "all instances"}`;
   elements.runShapeDescriptors.disabled = !descriptors.length || !classes.length;
 }
 
-async function runShapeDescriptorLab() {
+async function runShapeDescriptorLab(recalculate = false) {
   const descriptors = selectedShapeDescriptors();
   const classIds = selectedShapeClasses();
   if (!descriptors.length || !classIds.length) return;
+  if (!recalculate) {
+    try {
+      const response = await request("/api/tools/shape-descriptors/result");
+      const cached = (await response.json()).result;
+      const sameSelection = JSON.stringify(cached.descriptors) === JSON.stringify(descriptors)
+        && JSON.stringify(cached.class_ids) === JSON.stringify(classIds)
+        && Number(cached.sample_count || 0) === Math.max(0, Number(elements.shapeSampleCount.value) || 0);
+      if (sameSelection) {
+        renderShapeResults(cached);
+        elements.shapeSetup.hidden = true;
+        elements.shapeResults.hidden = false;
+        showToast("Loaded cached Shape Descriptor result");
+        return;
+      }
+    } catch (error) {
+      if (!error.message.includes("404")) throw error;
+    }
+  }
   elements.runShapeDescriptors.disabled = true;
   elements.shapeRunProgress.hidden = false;
   elements.shapeRunProgressBar.value = 0;
@@ -962,7 +1168,7 @@ async function runShapeDescriptorLab() {
   elements.shapeStopTask.hidden = false;
   elements.shapeStopTask.disabled = false;
   try {
-    const response = await request("/api/tools/shape-descriptors/start", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ descriptors, class_ids: classIds }) });
+    const response = await request("/api/tools/shape-descriptors/start", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ descriptors, class_ids: classIds, sample_count: Math.max(0, Number(elements.shapeSampleCount.value) || 0) }) });
     const { job_id: jobId } = await response.json();
     state.activeShapeJob = jobId;
     elements.stopToolTask.disabled = false;
@@ -1019,6 +1225,11 @@ function shapeTableCell(value, textAlign = "right") {
   return input;
 }
 
+function shapeDescriptorLabel(key, label) {
+  const match = key.match(/^fourier_descriptors_(\d+)$/);
+  return match ? `FD${match[1]}` : label;
+}
+
 function renderShapeResults(result) {
   state.shapeResult = result;
   elements.shapeDetailClass.replaceChildren();
@@ -1045,12 +1256,22 @@ function renderShapeResults(result) {
     const header = element("div", "shape-descriptor-row header");
     header.append(element("span", "", "Descriptor"), element("span", "", "Mean"), element("span", "", "Std"), element("span", "", "Min"), element("span", "", "P05"), element("span", "", "Median"), element("span", "", "P95"), element("span", "", "Max"));
     card.append(header);
-    for (const descriptor of Object.values(category.summary.descriptors)) {
+    for (const [key, descriptor] of Object.entries(category.summary.descriptors)) {
       const row = element("div", "shape-descriptor-row");
-      row.append(shapeTableCell(descriptor.label, "left"), shapeTableCell(formatNumber(descriptor.mean)), shapeTableCell(formatNumber(descriptor.std)), shapeTableCell(formatNumber(descriptor.min)), shapeTableCell(formatNumber(descriptor.p05)), shapeTableCell(formatNumber(descriptor.median)), shapeTableCell(formatNumber(descriptor.p95)), shapeTableCell(formatNumber(descriptor.max)));
+      row.append(shapeTableCell(shapeDescriptorLabel(key, descriptor.label), "left"), shapeTableCell(formatNumber(descriptor.mean)), shapeTableCell(formatNumber(descriptor.std)), shapeTableCell(formatNumber(descriptor.min)), shapeTableCell(formatNumber(descriptor.p05)), shapeTableCell(formatNumber(descriptor.median)), shapeTableCell(formatNumber(descriptor.p95)), shapeTableCell(formatNumber(descriptor.max)));
       card.append(row);
     }
     elements.shapeClassResults.append(card);
+  }
+}
+
+async function copyShapeResult() {
+  if (!state.shapeResult) return;
+  try {
+    await navigator.clipboard.writeText(JSON.stringify(state.shapeResult, null, 2));
+    showToast("Shape Descriptor result copied");
+  } catch {
+    showToast("Clipboard access was denied");
   }
 }
 
@@ -1059,7 +1280,7 @@ function updateShapeDetailDescriptors() {
   const category = state.shapeResult.categories.find((item) => String(item.id) === elements.shapeDetailClass.value);
   elements.shapeDetailDescriptor.replaceChildren();
   for (const [key, descriptor] of Object.entries(category?.summary.descriptors || {})) {
-    const option = element("option", "", descriptor.label);
+    const option = element("option", "", shapeDescriptorLabel(key, descriptor.label));
     option.value = key;
     elements.shapeDetailDescriptor.append(option);
   }
@@ -1739,6 +1960,8 @@ async function loadDataset() {
     const data = await response.json();
     state.dataset = data;
     state.images = data.images;
+    state.frames = data.images;
+    state.frameStates = Object.fromEntries(data.images.map((image) => [String(image.id), image.frame_state || "waiting"]));
     if (data.categories.length) state.activeCategory = data.categories[0].id;
     renderCategories();
     const projectUi = await loadProjectDocument();
@@ -1807,8 +2030,8 @@ function applyFilter() {
   state.filtered = state.images.filter((image) => {
     if (query && !image.file_name.toLowerCase().includes(query)) return false;
     if (state.filter === "empty" && image.annotation_count) return false;
-    if (state.filter === "reviewed" && !image.annotation_count) return false;
-    if (state.filter === "reviewed" && !hasImageReview(image.id)) return false;
+    if (["waiting", "annotated", "reviewed"].includes(state.filter) && image.frame_state !== state.filter) return false;
+    if (state.filter === "annotation-reviewed" && !hasImageReview(image.id)) return false;
     if (state.filter === "flagged" && !hasFlaggedReview(image.id)) return false;
     return true;
   });
@@ -1848,7 +2071,7 @@ function renderImageList() {
     const dot = element("span", "status-dot");
     const review = getImageReview(image.id);
     if (review) dot.classList.add(review);
-    meta.append(dot, element("span", "", `${image.annotation_count} objects`));
+    meta.append(dot, element("span", "", `${image.annotation_count} objects`), element("span", "frame-state", image.frame_state || "waiting"));
     copy.append(meta);
     const badge = element("span", "item-index", String(image.id));
     button.append(thumb, copy, badge);
@@ -1857,6 +2080,27 @@ function renderImageList() {
   }
   elements.imageList.append(fragment);
   updateSelectionPosition();
+}
+
+function updateFrameControls() {
+  const frameState = state.current?.frame_state || "waiting";
+  const role = state.currentUser?.role;
+  elements.markAnnotated.hidden = role !== "annotator" || frameState === "reviewed";
+  elements.markReviewed.hidden = role !== "manager" || frameState !== "annotated";
+}
+
+async function setCurrentFrameState(frameState) {
+  if (!state.current) return;
+  try {
+    await request("/api/frame-state", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ image_id: state.current.id, state: frameState }) });
+    state.current.frame_state = frameState;
+    state.frameStates[String(state.current.id)] = frameState;
+    updateFrameControls();
+    renderImageList();
+    showToast(`Frame marked ${frameState}`);
+  } catch (error) {
+    showToast(error.message);
+  }
 }
 
 function getImageReview(imageId) {
@@ -1873,6 +2117,18 @@ function currentOriginalIds(imageId) {
   return getOriginalAnnotations(imageId);
 }
 
+async function loadFrameWorkspace(imageId) {
+  if (state.currentUser?.role !== "annotator") return;
+  const response = await request(`/api/frame-workspace?image_id=${encodeURIComponent(imageId)}`);
+  const result = await response.json();
+  const workspace = result.workspace || {};
+  state.reviews = workspace.reviews || {};
+  state.edits = workspace.edits || {};
+  state.created = workspace.created || [];
+  state.maskEdits = workspace.maskEdits || {};
+  state.nextNewId = workspace.nextNewId || state.nextNewId;
+}
+
 async function selectImage(imageId, updateHash = true) {
   const token = ++state.loadToken;
   state.current = state.images.find((image) => image.id === imageId) || null;
@@ -1884,6 +2140,7 @@ async function selectImage(imageId, updateHash = true) {
   setPanMode(false);
   state.selectedId = null;
   state.drag = null;
+  updateFrameControls();
   elements.loading.hidden = false;
   elements.stage.hidden = true;
   elements.objectList.replaceChildren(element("div", "object-empty", "Loading objects…"));
@@ -1900,6 +2157,8 @@ async function selectImage(imageId, updateHash = true) {
     const data = await response.json();
     if (token !== state.loadToken) return;
     state.imageData = data;
+    await loadFrameWorkspace(imageId);
+    updateFrameControls();
     state.nextNewId = Math.max(state.nextNewId, data.max_annotation_id + 1, ...state.created.map((annotation) => annotation.id + 1));
     state.selectedId = getAnnotations()[0]?.id ?? null;
     let attempt = 0;
@@ -2527,6 +2786,7 @@ document.querySelectorAll("[data-ribbon-tab]").forEach((tab) => {
     if (event.key === "ArrowLeft") moveRibbonTab(tab.dataset.ribbonTab, -1);
   });
 });
+upgradeToggleButtons();
 setRibbonCategory(state.ribbonCategory);
 elements.stopToolTask.addEventListener("click", stopActiveTask);
 elements.shapeStopTask.addEventListener("click", stopActiveTask);
@@ -2539,6 +2799,18 @@ elements.openProjectModal.addEventListener("click", (event) => {
 elements.listProjects.addEventListener("click", listAvailableProjects);
 elements.openSelectedProject.addEventListener("click", openSelectedProject);
 elements.projectButton.addEventListener("click", openProjectModal);
+elements.manageAccountsButton.addEventListener("click", openAccountsManager);
+elements.closeAccountsModal.addEventListener("click", closeAccountsModal);
+elements.accountsModal.addEventListener("click", (event) => {
+  if (event.target === elements.accountsModal) closeAccountsModal();
+});
+elements.createAccount.addEventListener("click", createAccount);
+elements.assignFramesButton.addEventListener("click", openAssignManager);
+elements.closeAssignModal.addEventListener("click", closeAssignModal);
+elements.assignModal.addEventListener("click", (event) => {
+  if (event.target === elements.assignModal) closeAssignModal();
+});
+elements.assignSelectedFrames.addEventListener("click", assignSelectedFrames);
 elements.closeProjectModal.addEventListener("click", closeProjectModal);
 elements.projectModal.addEventListener("click", (event) => {
   if (event.target === elements.projectModal) closeProjectModal();
@@ -2649,6 +2921,8 @@ elements.drawMode.addEventListener("change", () => {
   state.drawMode = elements.drawMode.checked;
   setPanMode(state.panMode);
 });
+elements.markAnnotated.addEventListener("click", () => setCurrentFrameState("annotated"));
+elements.markReviewed.addEventListener("click", () => setCurrentFrameState("reviewed"));
 elements.markKeep.addEventListener("click", () => setReview("keep"));
 elements.markFix.addEventListener("click", () => setReview("fix"));
 elements.markRemove.addEventListener("click", () => setReview("remove"));
@@ -2658,6 +2932,10 @@ elements.exportAll.addEventListener("click", exportAll);
 elements.islandFrequencyTool.addEventListener("click", () => toolRegistry.islandFrequency.run());
 elements.shapeDescriptorTool.addEventListener("click", () => toolRegistry.shapeDescriptors.run());
 elements.excessIslandTool.addEventListener("click", () => toolRegistry.excessIslands.run());
+elements.recalculateIslandFrequency.addEventListener("click", () => runIslandFrequency(true));
+elements.copyShapeResult.addEventListener("click", copyShapeResult);
+elements.recalculateShapeDescriptors.addEventListener("click", () => runShapeDescriptorLab(true));
+elements.recalculateExcessIslands.addEventListener("click", () => runExcessIslandFilter(true));
 elements.closeExcessIslandModal.addEventListener("click", closeExcessIslandFilter);
 elements.excessIslandModal.addEventListener("click", (event) => {
   if (event.target === elements.excessIslandModal) closeExcessIslandFilter();
@@ -2670,14 +2948,8 @@ elements.closeShapeModal.addEventListener("click", closeShapeModal);
 elements.shapeModal.addEventListener("click", (event) => {
   if (event.target === elements.shapeModal) closeShapeModal();
 });
-elements.shapeDescriptorsAll.addEventListener("click", () => {
-  for (const input of elements.shapeDescriptorList.querySelectorAll(".toggle-button")) input.checked = true;
-  updateShapeSelectionSummary();
-});
-elements.shapeDescriptorsNone.addEventListener("click", () => {
-  for (const input of elements.shapeDescriptorList.querySelectorAll(".toggle-button")) input.checked = false;
-  updateShapeSelectionSummary();
-});
+elements.shapeDescriptorSelect.addEventListener("change", updateShapeSelectionSummary);
+elements.shapeSampleCount.addEventListener("input", updateShapeSelectionSummary);
 elements.shapeClassesAll.addEventListener("click", () => {
   for (const input of elements.shapeClassList.querySelectorAll(".toggle-button")) input.checked = true;
   updateShapeSelectionSummary();
@@ -2830,5 +3102,82 @@ if (window.lucide) {
   window.lucide.createIcons({ attrs: { "stroke-width": 1.8 } });
 }
 
-initializeHistory();
-loadDataset();
+function showLogin() {
+  document.body.classList.add("logged-out");
+  elements.loginModal.hidden = false;
+  elements.loginPassword.value = "";
+  elements.loginStatus.textContent = "";
+  elements.loginUsername.focus();
+}
+
+function applyAuthenticatedUser(user, csrfToken) {
+  state.currentUser = user;
+  state.csrfToken = csrfToken;
+  document.body.classList.remove("logged-out");
+  elements.loginModal.hidden = true;
+  elements.currentUser.textContent = `${user.username} · ${user.role}`;
+  document.querySelectorAll("[data-manager-only]").forEach((node) => { node.hidden = user.role !== "manager"; });
+  if (user.role === "annotator") {
+    setRibbonCategory("edit");
+    state.reviews = {};
+    state.edits = {};
+    state.created = [];
+    state.maskEdits = {};
+  } else {
+    setRibbonCategory(state.ribbonCategory);
+  }
+}
+
+async function login(event) {
+  event.preventDefault();
+  elements.loginSubmit.disabled = true;
+  elements.loginStatus.textContent = "Signing in…";
+  try {
+    const response = await fetch("/api/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "same-origin",
+      body: JSON.stringify({ username: elements.loginUsername.value.trim(), password: elements.loginPassword.value }),
+    });
+    if (!response.ok) throw new Error(await response.text() || "Invalid username or password");
+    const result = await response.json();
+    applyAuthenticatedUser(result.user, result.csrf_token);
+    await loadDataset();
+  } catch (error) {
+    elements.loginStatus.textContent = error.message;
+  } finally {
+    elements.loginSubmit.disabled = false;
+  }
+}
+
+async function logout() {
+  try {
+    await request("/api/auth/logout", { method: "POST" });
+  } finally {
+    state.currentUser = null;
+    state.csrfToken = "";
+    showLogin();
+  }
+}
+
+async function bootstrapApplication() {
+  initializeHistory();
+  try {
+    const response = await fetch("/api/auth/me", { credentials: "same-origin" });
+    if (response.status === 401) {
+      showLogin();
+      return;
+    }
+    if (!response.ok) throw new Error(await response.text() || "Unable to load session");
+    const result = await response.json();
+    applyAuthenticatedUser(result.user, result.csrf_token);
+    await loadDataset();
+  } catch (error) {
+    showLogin();
+    elements.loginStatus.textContent = error.message;
+  }
+}
+
+elements.loginForm.addEventListener("submit", login);
+elements.logoutButton.addEventListener("click", logout);
+bootstrapApplication();

@@ -127,6 +127,34 @@ h1 {
   gap: 8px;
 }
 
+.topbar-user {
+  width: 78px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 2px;
+  flex: 0 0 78px;
+  margin-left: 4px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.topbar-user #current-user {
+  max-width: 48px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.topbar-user .icon-button {
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel-2);
+}
+
 .app-ribbon {
   min-width: 0;
   width: 100%;
@@ -599,6 +627,12 @@ h1 {
   }
 }
 
+body.logged-out .app-ribbon,
+body.logged-out .topbar-user,
+body.logged-out .app-shell {
+  display: none;
+}
+
 .app-shell {
   height: calc(100vh - 96px);
   display: grid;
@@ -810,6 +844,13 @@ h1 {
   border-color: var(--color);
   background: var(--color);
   box-shadow: inset 0 0 0 3px var(--panel);
+}
+
+.frame-state {
+  margin-left: 5px;
+  color: var(--muted);
+  font-size: 8px;
+  text-transform: uppercase;
 }
 
 .category-count {
@@ -1181,10 +1222,19 @@ select {
 
 .tool-progress {
   min-width: 300px;
+  height: 30px;
+  min-height: 0;
   display: grid;
-  grid-template-columns: auto minmax(90px, 1fr) auto;
+  grid-template-columns: auto minmax(90px, 1fr) auto auto;
   align-items: center;
   gap: 8px;
+  overflow: hidden;
+}
+
+.tool-progress .button {
+  height: 24px;
+  padding: 0 8px;
+  font-size: 9px;
 }
 
 .tool-progress[hidden] {
@@ -1208,7 +1258,10 @@ select {
 }
 
 .statusbar {
+  min-height: 0;
+  height: 30px;
   justify-content: space-between;
+  overflow: hidden;
   padding: 0 12px;
   border-top: 1px solid var(--line);
   background: var(--panel);
@@ -1252,6 +1305,28 @@ select {
   border-radius: 13px;
   background: #111620;
   box-shadow: 0 28px 90px rgba(0, 0, 0, 0.65);
+}
+
+.modal-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.shape-result-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.shape-results-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+  color: var(--muted);
+  font-size: 10px;
 }
 
 .modal-header {
@@ -1663,6 +1738,39 @@ select {
   margin-bottom: 16px;
 }
 
+.shape-class-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.shape-descriptor-select {
+  width: 100%;
+  height: 32px;
+  margin-bottom: 16px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--panel-2);
+  color: var(--text);
+}
+
+.shape-sample-control {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.shape-sample-control input {
+  width: 72px;
+  height: 28px;
+  padding: 0 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel-2);
+  color: var(--text);
+}
+
 .shape-check {
   display: flex;
   align-items: flex-start;
@@ -1994,6 +2102,101 @@ select {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.accounts-card,
+.assign-card {
+  width: min(760px, 96vw);
+}
+
+.accounts-form,
+.assign-form {
+  display: grid;
+  gap: 14px;
+  padding: 18px 20px 20px;
+}
+
+.accounts-list {
+  max-height: 240px;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+}
+
+.account-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 10px;
+  border-bottom: 1px solid var(--line);
+  font-size: 10px;
+}
+
+.account-row:last-child {
+  border-bottom: 0;
+}
+
+.account-row small {
+  color: var(--muted);
+}
+
+.account-create-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr 120px auto;
+  gap: 8px;
+  align-items: end;
+}
+
+.account-create-grid label,
+.assign-form label {
+  display: grid;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.account-create-grid input,
+.account-create-grid select,
+.assign-form select {
+  width: 100%;
+  height: 32px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel-2);
+  color: var(--text);
+}
+
+.assign-form select[multiple] {
+  min-height: 180px;
+}
+
+.login-card {
+  width: min(420px, 96vw);
+}
+
+.login-form {
+  display: grid;
+  gap: 13px;
+  padding: 20px;
+}
+
+.login-form label {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.login-form input {
+  width: 100%;
+  height: 34px;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--panel-2);
+  color: var(--text);
 }
 
 .open-project-card {

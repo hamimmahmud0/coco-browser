@@ -5,21 +5,23 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
   <title>COCO 1.0 Annotation Browser</title>
-  <link rel="stylesheet" href="/style.css?v=55">
+  <link rel="stylesheet" href="/style.css?v=68">
 </head>
 <body>
   <header class="topbar">
     <nav class="app-ribbon" aria-label="Application ribbon">
       <div class="brand" role="presentation">TRAVAT</div>
       <div class="ribbon-tabs" role="tablist" aria-label="Ribbon categories">
-        <button class="ribbon-tab active" type="button" role="tab" aria-selected="true" aria-controls="ribbon-project" data-ribbon-tab="project">Project</button>
-        <button class="ribbon-tab" type="button" role="tab" aria-selected="false" aria-controls="ribbon-dataset" data-ribbon-tab="dataset">Dataset</button>
+        <button class="ribbon-tab active manager-only" type="button" role="tab" aria-selected="true" aria-controls="ribbon-project" data-ribbon-tab="project">Project</button>
+        <button class="ribbon-tab manager-only" type="button" role="tab" aria-selected="false" aria-controls="ribbon-dataset" data-ribbon-tab="dataset">Dataset</button>
         <button class="ribbon-tab" type="button" role="tab" aria-selected="false" aria-controls="ribbon-edit" data-ribbon-tab="edit">Edit</button>
-        <button class="ribbon-tab" type="button" role="tab" aria-selected="false" aria-controls="ribbon-review" data-ribbon-tab="review">Review</button>
-        <button class="ribbon-tab" type="button" role="tab" aria-selected="false" aria-controls="ribbon-analysis" data-ribbon-tab="analysis">Analysis</button>
+        <button class="ribbon-tab manager-only" type="button" role="tab" aria-selected="false" aria-controls="ribbon-review" data-ribbon-tab="review">Review</button>
+        <button class="ribbon-tab manager-only" type="button" role="tab" aria-selected="false" aria-controls="ribbon-accounts" data-ribbon-tab="accounts">Accounts</button>
+        <button class="ribbon-tab manager-only" type="button" role="tab" aria-selected="false" aria-controls="ribbon-assign" data-ribbon-tab="assign">Assign</button>
+        <button class="ribbon-tab manager-only" type="button" role="tab" aria-selected="false" aria-controls="ribbon-analysis" data-ribbon-tab="analysis">Analysis</button>
       </div>
       <div class="ribbon-panels">
-        <div id="ribbon-project" class="ribbon-panel" role="tabpanel" data-ribbon-panel="project">
+        <div id="ribbon-project" class="ribbon-panel manager-only" role="tabpanel" data-ribbon-panel="project" data-manager-only>
           <div class="ribbon-grid">
             <button id="open-project-button" class="ribbon-command small" type="button" aria-label="Open project" title="Open project"><i data-lucide="folder-open"></i></button>
             <button id="new-project-button" class="ribbon-command small" type="button" aria-label="New project" title="New project"><i data-lucide="file-plus-2"></i></button>
@@ -28,7 +30,7 @@
             <span id="save-state" class="ribbon-status">Local edits enabled</span>
           </div>
         </div>
-        <div id="ribbon-dataset" class="ribbon-panel" role="tabpanel" data-ribbon-panel="dataset" hidden>
+        <div id="ribbon-dataset" class="ribbon-panel manager-only" role="tabpanel" data-ribbon-panel="dataset" data-manager-only hidden>
           <div class="ribbon-grid">
             <button id="export-current" class="ribbon-command small" type="button" aria-label="Export image" title="Export image"><i data-lucide="image-down"></i></button>
             <button id="export-all" class="ribbon-command large primary" type="button"><i data-lucide="file-json"></i><span>COCO</span></button>
@@ -41,7 +43,7 @@
             <label class="ribbon-option history-option"><span>History</span><select id="history-select" title="History"></select></label>
           </div>
         </div>
-        <div id="ribbon-review" class="ribbon-panel" role="tabpanel" data-ribbon-panel="review" hidden>
+        <div id="ribbon-review" class="ribbon-panel manager-only" role="tabpanel" data-ribbon-panel="review" data-manager-only hidden>
           <div class="ribbon-grid">
             <button id="mark-keep" class="ribbon-command small review keep" type="button" aria-label="Keep"><i data-lucide="check"></i></button>
             <button id="mark-fix" class="ribbon-command small review fix" type="button" aria-label="Fix"><i data-lucide="wrench"></i></button>
@@ -49,7 +51,17 @@
             <button id="clear-review" class="ribbon-command small review clear" type="button" aria-label="Clear review"><i data-lucide="eraser"></i></button>
           </div>
         </div>
-        <div id="ribbon-analysis" class="ribbon-panel" role="tabpanel" data-ribbon-panel="analysis" hidden>
+        <div id="ribbon-accounts" class="ribbon-panel" role="tabpanel" data-ribbon-panel="accounts" data-manager-only hidden>
+          <div class="ribbon-grid">
+            <button id="manage-accounts-button" class="ribbon-command large" type="button"><i data-lucide="users"></i><span>Accounts</span></button>
+          </div>
+        </div>
+        <div id="ribbon-assign" class="ribbon-panel" role="tabpanel" data-ribbon-panel="assign" data-manager-only hidden>
+          <div class="ribbon-grid">
+            <button id="assign-frames-button" class="ribbon-command large" type="button"><i data-lucide="list-checks"></i><span>Assign</span></button>
+          </div>
+        </div>
+        <div id="ribbon-analysis" class="ribbon-panel manager-only" role="tabpanel" data-ribbon-panel="analysis" data-manager-only hidden>
           <div class="ribbon-grid">
             <button id="island-frequency-tool" class="ribbon-command large" type="button"><i data-lucide="bar-chart-3"></i><span>Frequency</span></button>
             <button id="shape-descriptor-tool" class="ribbon-command large" type="button"><i data-lucide="scan-line"></i><span>Descriptors</span></button>
@@ -58,6 +70,10 @@
         </div>
       </div>
     </nav>
+    <div class="topbar-user">
+      <span id="current-user"></span>
+      <button id="logout-button" class="icon-button" type="button" aria-label="Log out" title="Log out"><i data-lucide="log-out"></i></button>
+    </div>
   </header>
 
   <main class="app-shell">
@@ -70,7 +86,10 @@
         <button class="filter-button active" data-filter="all">All</button>
         <button class="filter-button" data-filter="reviewed">Reviewed</button>
         <button class="filter-button" data-filter="flagged">Flagged</button>
-        <button class="filter-button" data-filter="empty">No objects</button>
+          <button class="filter-button" data-filter="empty">No objects</button>
+          <button class="filter-button" data-filter="waiting">Waiting</button>
+          <button class="filter-button" data-filter="annotated">Annotated</button>
+        <button class="filter-button" data-filter="annotation-reviewed">Annotation reviewed</button>
       </div>
       <div class="list-heading">
         <span>Images</span>
@@ -105,6 +124,8 @@
           <button id="show-masks" class="toggle toggle-button active" type="button" aria-pressed="true">Masks</button>
           <button id="draw-mode" class="toggle toggle-button" type="button" aria-pressed="false">Draw bbox <kbd>B</kbd></button>
           <select id="active-category" title="Active category"></select>
+          <button id="mark-annotated" class="button secondary" type="button" hidden>Mark annotated</button>
+          <button id="mark-reviewed" class="button secondary" type="button" hidden>Mark reviewed</button>
         </div>
       </div>
 
@@ -154,7 +175,10 @@
           <h2 id="tool-modal-title">Island Frequency</h2>
           <p>Connected components per detection instance using 4-connectivity</p>
         </div>
-        <button id="close-tool-modal" class="icon-button" type="button" title="Close">×</button>
+        <div class="modal-header-actions">
+          <button id="recalculate-island-frequency" class="button secondary" type="button">Recalculate</button>
+          <button id="close-tool-modal" class="icon-button" type="button" title="Close">×</button>
+        </div>
       </div>
       <div id="island-summary" class="summary-grid"></div>
       <div class="chart-section">
@@ -233,17 +257,17 @@
       </div>
       <div id="shape-setup" class="shape-setup">
         <div class="shape-section-heading">
-          <strong>Descriptors</strong>
-          <div><button id="shape-descriptors-all" class="button secondary" type="button">All</button><button id="shape-descriptors-none" class="button secondary" type="button">None</button></div>
+          <strong>Descriptor</strong>
         </div>
-        <div id="shape-descriptor-list" class="shape-check-grid"></div>
+        <select id="shape-descriptor-select" class="shape-descriptor-select"></select>
         <div class="shape-section-heading">
           <strong>Classes</strong>
           <div><button id="shape-classes-all" class="button secondary" type="button">All</button><button id="shape-classes-none" class="button secondary" type="button">None</button></div>
         </div>
-        <div id="shape-class-list" class="shape-check-grid"></div>
+        <div id="shape-class-list" class="shape-check-grid shape-class-grid"></div>
         <div class="shape-run-row">
-          <span id="shape-selection-summary">No descriptors selected</span>
+          <span id="shape-selection-summary">No descriptor selected</span>
+          <label class="shape-sample-control">Sample per class <input id="shape-sample-count" type="number" min="0" step="1" value="0" placeholder="0 = all"></label>
           <div id="shape-run-progress" class="shape-run-progress" hidden>
             <progress id="shape-run-progress-bar" max="100" value="0"></progress>
             <span id="shape-run-progress-count">0 / 0</span>
@@ -253,6 +277,7 @@
         </div>
       </div>
       <div id="shape-results" class="shape-results" hidden>
+        <div class="shape-results-toolbar"><span>Cached result</span><div class="shape-result-actions"><button id="copy-shape-result" class="button secondary" type="button">Copy result</button><button id="recalculate-shape-descriptors" class="button secondary" type="button">Recalculate</button></div></div>
         <div id="shape-result-summary" class="shape-result-summary"></div>
         <div class="shape-detail-graph">
           <div class="shape-detail-controls">
@@ -285,9 +310,61 @@
         <div id="excess-island-progress" class="shape-run-progress" hidden><progress id="excess-island-progress-bar" max="100" value="0"></progress><span id="excess-island-progress-count">0 / 0</span></div>
       </div>
       <div id="excess-island-results" class="excess-island-results" hidden>
+        <div class="shape-results-toolbar"><span>Cached result</span><button id="recalculate-excess-islands" class="button secondary" type="button">Recalculate</button></div>
         <div id="excess-island-summary" class="shape-result-summary"></div>
         <div id="excess-island-table"></div>
       </div>
+    </div>
+  </div>
+
+  <div id="accounts-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="accounts-title" hidden>
+    <div class="modal-card accounts-card">
+      <div class="modal-header">
+        <div><h2 id="accounts-title">Annotator accounts</h2><p>Manager-only account management</p></div>
+        <button id="close-accounts-modal" class="icon-button" type="button" title="Close">×</button>
+      </div>
+      <div class="accounts-form">
+        <div id="accounts-list" class="accounts-list"></div>
+        <div class="account-create-grid">
+          <label>Username<input id="account-username" type="text" autocomplete="off"></label>
+          <label>Password<input id="account-password" type="password" autocomplete="new-password"></label>
+          <label>Role<select id="account-role"><option value="annotator">Annotator</option><option value="manager">Manager</option></select></label>
+          <button id="create-account" class="button primary" type="button">Create</button>
+        </div>
+        <p id="accounts-status" class="project-status"></p>
+      </div>
+    </div>
+  </div>
+
+  <div id="assign-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="assign-title" hidden>
+    <div class="modal-card assign-card">
+      <div class="modal-header">
+        <div><h2 id="assign-title">Assign frames</h2><p>Assign waiting frames to annotators</p></div>
+        <button id="close-assign-modal" class="icon-button" type="button" title="Close">×</button>
+      </div>
+      <div class="assign-form">
+        <label>Annotator<select id="assign-annotator"></select></label>
+        <label>Frames<select id="assign-frames-list" multiple size="10"></select></label>
+        <div class="project-actions"><button id="assign-selected-frames" class="button primary" type="button">Assign selected</button></div>
+        <p id="assign-status" class="project-status"></p>
+      </div>
+    </div>
+  </div>
+
+  <div id="login-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="login-title" hidden>
+    <div class="modal-card login-card">
+      <div class="modal-header">
+        <div>
+          <h2 id="login-title">Sign in to TRAVAT</h2>
+          <p>Use your manager or annotator account</p>
+        </div>
+      </div>
+      <form id="login-form" class="login-form">
+        <label>Username<input id="login-username" type="text" autocomplete="username" required></label>
+        <label>Password<input id="login-password" type="password" autocomplete="current-password" required></label>
+        <p id="login-status" class="project-status"></p>
+        <button id="login-submit" class="button primary" type="submit">Sign in</button>
+      </form>
     </div>
   </div>
 
@@ -335,6 +412,6 @@
 
   <div id="toast" class="toast" role="status"></div>
   <script src="https://unpkg.com/lucide@0.547.0/dist/umd/lucide.js"></script>
-  <script src="/app.js?v=55"></script>
+  <script src="/app.js?v=68"></script>
 </body>
 </html>

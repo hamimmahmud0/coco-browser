@@ -23,6 +23,9 @@ The default dataset is:
 - Uses a local `dataset/annotations/instances.json` and `dataset/images/` layout when available.
 - On startup, downloads the default HF bucket to `dataset/` when no valid local dataset exists.
 - Converts a dataset workspace into a project and restores edits, reviews, history, and current image location from a Hugging Face project bucket.
+- Supports manager and annotator accounts with server-side sessions and role-based access.
+- Managers can create annotator accounts, assign frames, and review frame workflow states; annotators see only assigned frames.
+- Frame workflow states are `waiting`, `annotated`, and `reviewed`.
 - Runs background dataset tools with live status-bar progress.
 - Includes the **Island Frequency** tool for connected-component analysis across all instances.
 - Includes snapshot-based undo/redo and a Photoshop-style history selector.
@@ -256,13 +259,22 @@ To expose a local instance through a temporary Cloudflare Tunnel:
 cloudflared tunnel --url http://localhost:8888
 ```
 
-The application has no authentication. Do not expose it publicly without placing an authentication layer in front of it.
+Authentication is required for all application APIs. The first startup creates a manager account; set `MANAGER_USERNAME` and `MANAGER_PASSWORD` for non-interactive startup. Manager-only ribbon tabs are hidden from annotators.
 
 ## API Endpoints
 
 | Method | Endpoint | Purpose |
 | --- | --- | --- |
 | `GET` | `/api/health` | Server health check |
+| `POST` | `/api/auth/login` | Create a user session |
+| `GET` | `/api/auth/me` | Current user and CSRF token |
+| `POST` | `/api/auth/logout` | End the current session |
+| `GET` | `/api/accounts` | Manager-only account list |
+| `POST` | `/api/accounts` | Manager-only account creation |
+| `GET` | `/api/project/frames` | Visible frames and workflow state |
+| `POST` | `/api/project/assign` | Manager-only frame assignment |
+| `POST` | `/api/frame-state` | Update frame workflow state |
+| `POST` | `/api/frame-workspace` | Save an assigned annotator workspace |
 | `GET` | `/api/dataset` | Dataset metadata, images, categories, and counts |
 | `GET` | `/api/image/{id}` | One image, its annotations, and media URL |
 | `GET` | `/api/media/{id}` | Streamed image proxy with range support |
