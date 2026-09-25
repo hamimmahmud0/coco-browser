@@ -920,20 +920,55 @@ def encode_mask(mask):
     return encoded
 
 
+def encode_component_intervals(height, width, component_intervals, kept_roots):
+    columns = {}
+    for start, end, column, root in component_intervals:
+        if root in kept_roots:
+            columns.setdefault(column, []).append((start, end))
+    counts = []
+    current = False
+    position = 0
+
+    def add_run(length, foreground):
+        nonlocal current
+        if length <= 0:
+            return
+        if not counts:
+            if foreground and not current:
+                counts.append(0)
+            counts.append(length)
+            current = foreground
+        elif current == foreground:
+            counts[-1] += length
+        else:
+            counts.append(length)
+            current = foreground
+
+    for column in sorted(columns):
+        column_start = column * height
+        for start, end in sorted(columns[column]):
+            add_run(column_start + start - position, False)
+            add_run(end - start, True)
+            position = column_start + end
+    add_run(height * width - position, False)
+    return counts
+
+
 def apply_mask_drops(segmentation, drop_indices):
     if not isinstance(segmentation, dict) or not drop_indices:
         return segmentation
-    masks = mask_component_masks(segmentation)
+    height, width, component_intervals = _mask_component_intervals(segmentation)
+    roots = []
+    for start, end, column, root in component_intervals:
+        if root not in roots:
+            roots.append(root)
     drops = {int(index) for index in drop_indices}
-    if not drops or min(drops) < 0 or max(drops) >= len(masks):
+    if not drops or min(drops) < 0 or max(drops) >= len(roots):
         raise ValueError("Invalid island drop index")
-    if len(drops) >= len(masks):
+    if len(drops) >= len(roots):
         return None
-    kept = np.zeros_like(masks[0], dtype=bool)
-    for index, component in enumerate(masks):
-        if index not in drops:
-            kept |= component
-    return {"size": segmentation["size"], "counts": encode_mask(kept)}
+    kept_roots = {root for index, root in enumerate(roots) if index not in drops}
+    return {"size": segmentation["size"], "counts": encode_component_intervals(height, width, component_intervals, kept_roots)}
 
 
 def mask_geometry(segmentation):
