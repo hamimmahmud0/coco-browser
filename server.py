@@ -1,4 +1,5 @@
 import argparse
+import getpass
 import json
 import math
 from collections import Counter
@@ -6,6 +7,7 @@ from multiprocessing import get_context
 import mimetypes
 import numpy as np
 import os
+import sys
 import threading
 import traceback
 import time
@@ -28,8 +30,12 @@ IMAGE_URL = os.environ.get(
     "IMAGE_URL",
     "https://huggingface.co/buckets/hamimmahmud0/SAM_COCO_v1_b2_3024/resolve/annotate/images/{filename}",
 )
+DEFAULT_HF_SOURCE = "hf://buckets/hamimmahmud0/SAM_COCO_v1_b2_3024/annotate"
 ROOT = Path(__file__).resolve().parent
 STATIC = ROOT / "static"
+DATASET_DIR = ROOT / "dataset"
+USE_LOCAL_DATASET = True
+DATASET_SOURCE = ""
 _lock = threading.Lock()
 _jobs_lock = threading.Lock()
 _dataset = None
@@ -41,15 +47,87 @@ _job_cancel_events = {}
 _active_pools = {}
 
 
+def local_dataset_annotation_path():
+    return DATASET_DIR / "annotations" / "instances.json"
+
+
+def local_dataset_image_path(image):
+    return DATASET_DIR / "images" / Path(image["file_name"]).name
+
+
+def validate_local_dataset():
+    annotation_path = local_dataset_annotation_path()
+    images_dir = DATASET_DIR / "images"
+    if not annotation_path.is_file() or not images_dir.is_dir():
+        return False
+    try:
+        with annotation_path.open(encoding="utf-8") as file:
+            data = json.load(file)
+    except (OSError, json.JSONDecodeError):
+        return False
+    return bool(data.get("images")) and all(local_dataset_image_path(image).is_file() for image in data["images"])
+
+
+def normalize_hf_source(source):
+    source = source.strip()
+    if source.startswith("hf://buckets/"):
+        return source
+    if source.startswith("hf://"):
+        raise ValueError("HF source must use hf://buckets/<owner>/<bucket>/<prefix>")
+    return f"hf://buckets/{source.lstrip('/')}"
+
+
+def sync_hf_dataset(source, token=None):
+    try:
+        from huggingface_hub import sync_bucket
+    except ImportError as error:
+        raise RuntimeError("huggingface_hub is required to synchronize a dataset") from error
+    source = normalize_hf_source(source)
+    sync_bucket(source=source, dest=str(DATASET_DIR), delete=False, token=token or os.environ.get("HF_TOKEN"), quiet=False)
+    if not validate_local_dataset():
+        raise RuntimeError(f"Dataset synchronization completed but {local_dataset_annotation_path()} is missing or invalid")
+    return source
+
+
+def prepare_dataset(dataset_dir, remote_coco_url=None, remote_image_url=None, hf_source=None, hf_token=None, no_prompt=False):
+    global DATASET_DIR, USE_LOCAL_DATASET, COCO_URL, IMAGE_URL, DATASET_SOURCE
+    DATASET_DIR = Path(dataset_dir).expanduser().resolve()
+    if remote_coco_url or remote_image_url:
+        USE_LOCAL_DATASET = False
+        COCO_URL = remote_coco_url or os.environ.get("COCO_URL") or COCO_URL
+        IMAGE_URL = remote_image_url or os.environ.get("IMAGE_URL") or IMAGE_URL
+        DATASET_SOURCE = COCO_URL
+        return
+    if validate_local_dataset():
+        USE_LOCAL_DATASET = True
+        DATASET_SOURCE = str(local_dataset_annotation_path())
+        return
+    source = hf_source or os.environ.get("HF_DATASET_SOURCE") or DEFAULT_HF_SOURCE
+    token = hf_token or os.environ.get("HF_TOKEN")
+    if not no_prompt:
+        if not sys.stdin.isatty():
+            raise RuntimeError("No valid dataset found and stdin is not interactive; use --no-prompt with HF_DATASET_SOURCE/HF_TOKEN")
+        source = input(f"Hugging Face bucket path [{source}]: ").strip() or source
+        if token is None:
+            token = getpass.getpass("HF token (optional): ").strip() or None
+    print(f"Dataset not found in {DATASET_DIR}; syncing {source}...", flush=True)
+    DATASET_SOURCE = sync_hf_dataset(source, token)
+    USE_LOCAL_DATASET = True
+
+
 def load_dataset():
     global _dataset
     with _lock:
         if _dataset is not None:
             return _dataset
-        request = urllib.request.Request(COCO_URL, headers={"User-Agent": "coco-browser/1.0"})
-        with urllib.request.urlopen(request, timeout=120) as response:
-            payload = response.read()
-        data = json.loads(payload)
+        if USE_LOCAL_DATASET:
+            with local_dataset_annotation_path().open(encoding="utf-8") as file:
+                data = json.load(file)
+        else:
+            request = urllib.request.Request(COCO_URL, headers={"User-Agent": "coco-browser/1.0"})
+            with urllib.request.urlopen(request, timeout=120) as response:
+                payload = response.read()
+            data = json.loads(payload)
         data["images"] = sorted(data.get("images", []), key=lambda item: (item.get("file_name", ""), item.get("id", 0)))
         annotation_index = {}
         for annotation in data.get("annotations", []):
@@ -1133,7 +1211,7 @@ class Handler(BaseHTTPRequestHandler):
                 body = {
                     "image": image,
                     "image_url": f"/api/media/{image_id}",
-                    "source_url": IMAGE_URL.format(filename=image["file_name"]),
+                    "source_url": None if USE_LOCAL_DATASET else IMAGE_URL.format(filename=image["file_name"]),
                     "annotations": data["annotation_index"].get(image_id, []),
                     "categories": data["categories"],
                     "category_colors": data["category_colors"],
@@ -1177,6 +1255,9 @@ class Handler(BaseHTTPRequestHandler):
         if image is None:
             self.send_error(HTTPStatus.NOT_FOUND)
             return
+        if USE_LOCAL_DATASET:
+            self.send_local_image(local_dataset_image_path(image), send_body)
+            return
         source = IMAGE_URL.format(filename=image["file_name"])
         headers = {"User-Agent": "coco-browser/1.0", "Accept": "image/avif,image/webp,image/png,image/*,*/*;q=0.8"}
         if self.headers.get("Range"):
@@ -1196,6 +1277,47 @@ class Handler(BaseHTTPRequestHandler):
                         self.wfile.write(chunk)
         except urllib.error.HTTPError as error:
             self.send_error(error.code, f"Image source returned {error.code}")
+
+    def send_local_image(self, path, send_body):
+        try:
+            size = path.stat().st_size
+            start = 0
+            end = size - 1
+            status = HTTPStatus.OK
+            range_value = self.headers.get("Range", "")
+            if range_value.startswith("bytes="):
+                start_text, separator, end_text = range_value[6:].partition("-")
+                if not separator:
+                    self.send_error(HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE)
+                    return
+                start = int(start_text) if start_text else 0
+                end = int(end_text) if end_text else size - 1
+                if start < 0 or start >= size or end < start:
+                    self.send_error(HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE)
+                    return
+                end = min(end, size - 1)
+                status = HTTPStatus.PARTIAL_CONTENT
+            self.send_response(status)
+            self.send_header("Content-Type", mimetypes.guess_type(path.name)[0] or "application/octet-stream")
+            self.send_header("Content-Length", str(end - start + 1))
+            self.send_header("Accept-Ranges", "bytes")
+            self.send_header("Cache-Control", "public, max-age=3600")
+            if status == HTTPStatus.PARTIAL_CONTENT:
+                self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+            self.end_headers()
+            if send_body and size:
+                with path.open("rb") as file:
+                    file.seek(start)
+                    remaining = end - start + 1
+                    while remaining:
+                        chunk = file.read(min(256 * 1024, remaining))
+                        if not chunk:
+                            break
+                        self.wfile.write(chunk)
+                        remaining -= len(chunk)
+        except (OSError, ValueError):
+            self.send_error(HTTPStatus.NOT_FOUND)
+
 
     def send_json(self, data, send_body=True):
         body = json.dumps(data, separators=(",", ":")).encode("utf-8")
@@ -1243,28 +1365,43 @@ def build_parser():
     parser = argparse.ArgumentParser(description="Host the COCO 1.0 annotation browser.")
     parser.add_argument("--host", default=HOST, help=f"interface to bind (default: {HOST})")
     parser.add_argument("--port", type=int, default=PORT, help=f"port to bind (default: {PORT})")
-    parser.add_argument("--coco-url", default=COCO_URL, help="COCO instances JSON URL")
-    parser.add_argument("--image-url", default=IMAGE_URL, help="image URL template containing {filename}")
+    parser.add_argument("--coco-url", default=None, help="remote COCO instances JSON URL; overrides local dataset")
+    parser.add_argument("--image-url", default=None, help="remote image URL template containing {filename}")
     parser.add_argument("--workers", type=int, default=WORKERS, help="Island Frequency workers; 0 uses all available CPUs")
+    parser.add_argument("--dataset-dir", default=os.environ.get("DATASET_DIR", str(DATASET_DIR)), help="local dataset directory")
+    parser.add_argument("--hf-source", default=os.environ.get("HF_DATASET_SOURCE", DEFAULT_HF_SOURCE), help="HF bucket path or hf://buckets URI")
+    parser.add_argument("--hf-token", default=None, help="optional Hugging Face token; prefer HF_TOKEN")
+    parser.add_argument("--no-prompt", action="store_true", help="do not prompt when the local dataset is missing")
     return parser
 
 
 def main():
-    global COCO_URL, IMAGE_URL, WORKERS
+    global WORKERS
     parser = build_parser()
     args = parser.parse_args()
     if not 1 <= args.port <= 65535:
         parser.error("--port must be between 1 and 65535")
     if args.workers < 0:
         parser.error("--workers must be 0 or greater")
-    if "{filename}" not in args.image_url:
+    if args.image_url and "{filename}" not in args.image_url:
         parser.error("--image-url must contain {filename}")
-    COCO_URL = args.coco_url
-    IMAGE_URL = args.image_url
     WORKERS = args.workers
+    try:
+        prepare_dataset(
+            dataset_dir=args.dataset_dir,
+            remote_coco_url=args.coco_url or os.environ.get("COCO_URL"),
+            remote_image_url=args.image_url or os.environ.get("IMAGE_URL"),
+            hf_source=args.hf_source,
+            hf_token=args.hf_token,
+            no_prompt=args.no_prompt,
+        )
+        data = load_dataset()
+    except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as error:
+        parser.error(str(error))
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     print(f"COCO browser listening on http://{args.host}:{args.port}", flush=True)
-    print(f"COCO source: {COCO_URL}", flush=True)
+    print(f"Dataset source: {DATASET_SOURCE}", flush=True)
+    print(f"Images: {len(data['images'])}, annotations: {len(data['annotations'])}", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

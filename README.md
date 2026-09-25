@@ -1,6 +1,6 @@
 # COCO 1.0 Annotation Browser
 
-A dependency-free web browser for reviewing and editing COCO 1.0 instance annotations stored in a Hugging Face Storage Bucket.
+A web browser for reviewing and editing COCO 1.0 instance annotations stored in a local dataset directory or a Hugging Face Storage Bucket.
 
 The default dataset is:
 
@@ -20,7 +20,8 @@ The default dataset is:
 - Always keeps the selected bounding box visible, even when **Boxes** is unchecked.
 - Supports drawing, moving, resizing, reviewing, and removing bounding boxes.
 - Stores edits in browser `localStorage` and exports valid COCO 1.0 JSON.
-- Uses only the Python standard library for the server.
+- Uses a local `dataset/annotations/instances.json` and `dataset/images/` layout when available.
+- On startup, downloads the default HF bucket to `dataset/` when no valid local dataset exists.
 - Runs background dataset tools with live status-bar progress.
 - Includes the **Island Frequency** tool for connected-component analysis across all instances.
 - Includes snapshot-based undo/redo and a Photoshop-style history selector.
@@ -29,9 +30,13 @@ The default dataset is:
 
 - Python 3.10 or newer
 - A modern browser with Canvas support
-- Network access to the configured COCO JSON and image URLs
+- `huggingface_hub` for first-time HF bucket synchronization
 
-No package installation is required.
+Install requirements with:
+
+```bash
+pip install -r requirements.txt
+```
 
 ## Quick Start
 
@@ -39,6 +44,8 @@ No package installation is required.
 cd /root/work/coco-browser
 python server.py
 ```
+
+At startup the server uses a valid `dataset/` directory automatically. If it is missing or incomplete, the server asks for an HF bucket path, such as `hamimmahmud0/SAM_COCO_v1_b2_3024/annotate`, and optionally asks for an HF token. It normalizes the path to `hf://buckets/...` and syncs it into `dataset/`.
 
 Open:
 
@@ -55,7 +62,11 @@ The server binds to `0.0.0.0:8888` by default, so it is also reachable from anot
 --port PORT          Port to bind
 --coco-url URL       Direct URL to a COCO instances JSON file
 --image-url TEMPLATE Image URL template containing {filename}
---workers N         Island Frequency worker processes; 0 uses all available CPUs
+--workers N          Island Frequency worker processes; 0 uses all available CPUs
+--dataset-dir PATH   Local dataset directory (default: ./dataset)
+--hf-source PATH     HF bucket path or hf://buckets URI used when local data is missing
+--hf-token TOKEN     Optional HF token; prefer the HF_TOKEN environment variable
+--no-prompt          Do not prompt when the local dataset is missing
 ```
 
 Show all options:
